@@ -1,0 +1,2168 @@
+﻿unit Unit1;
+
+interface
+
+uses
+  Winapi.Windows,
+  Winapi.Messages,
+  Winapi.ShellAPI,
+  System.SysUtils,
+  System.Classes,
+  System.StrUtils,
+  System.JSON,
+  System.IOUtils,
+  System.SyncObjs,
+  Vcl.Graphics,
+  Vcl.Controls,
+  Vcl.Forms,
+  Vcl.Dialogs,
+  Vcl.StdCtrls,
+  Vcl.ComCtrls,
+  Vcl.ExtCtrls,
+  IdContext,
+  IdCustomTCPServer,
+  IdGlobal,
+  IdTCPServer,
+  IdTCPClient,
+  uTypes,
+  uSettings,
+  uLogger,
+  uMigrationOrchestrator,
+  uLogForm,
+  uProcessRunner,
+  uProtocolMessages;
+
+type
+  TAgentKind = (akUnknown, akSource, akTarget);
+
+  TPeerState = class
+  public
+    Authenticated: Boolean;
+    AgentKind: TAgentKind;
+    constructor Create;
+  end;
+
+  TMainForm = class(TForm)
+    pcMode: TPageControl;
+    tsServer: TTabSheet;
+    tsSource: TTabSheet;
+    tsTarget: TTabSheet;
+    sbMain: TStatusBar;
+    gbServerTop: TGroupBox;
+    chkServerActive: TCheckBox;
+    lblServerPort: TLabel;
+    edtServerPort: TEdit;
+    lblServerPassword: TLabel;
+    edtServerPassword: TEdit;
+    pnlServerCenter: TPanel;
+    gbServerSource: TGroupBox;
+    lblSourceStateCaption: TLabel;
+    lblSourceStateValue: TLabel;
+    lblSourcePDB: TLabel;
+    edtSourcePDB: TEdit;
+    lblSourceSYS: TLabel;
+    edtSourceSYS: TEdit;
+    lblSourceSYSPassword: TLabel;
+    edtSourceSYSPassword: TEdit;
+    lblSourceSchema: TLabel;
+    cbSourceSchema: TComboBox;
+    lblSourceTablespace: TLabel;
+    edtSourceTablespace: TEdit;
+    lblSourceSchemaPassword: TLabel;
+    edtSourceSchemaPassword: TEdit;
+    splServerAgents: TSplitter;
+    gbServerTarget: TGroupBox;
+    lblTargetStateCaption: TLabel;
+    lblTargetStateValue: TLabel;
+    lblTargetPDB: TLabel;
+    edtTargetPDB: TEdit;
+    lblTargetSYS: TLabel;
+    edtTargetSYS: TEdit;
+    lblTargetSYSPassword: TLabel;
+    edtTargetSYSPassword: TEdit;
+    lblTargetSchema: TLabel;
+    cbTargetSchema: TComboBox;
+    lblTargetTablespace: TLabel;
+    edtTargetTablespace: TEdit;
+    lblTargetSchemaPassword: TLabel;
+    edtTargetSchemaPassword: TEdit;
+    chkCleanBeforeImport: TCheckBox;
+    gbActions: TGroupBox;
+    btnMigrate: TButton;
+    btnShowLog: TButton;
+    pbMigration: TProgressBar;
+    lblProgressHint: TLabel;
+    pnlSourceTab: TPanel;
+    gbSourceAgent: TGroupBox;
+    lblSourceServerIP: TLabel;
+    edtSourceServerIP: TEdit;
+    lblSourceAgentPort: TLabel;
+    edtSourceAgentPort: TEdit;
+    lblSourceAgentPassword: TLabel;
+    edtSourceAgentPassword: TEdit;
+    btnSourceConnect: TButton;
+    lblSourceAgentStatusCaption: TLabel;
+    lblSourceAgentStatusValue: TLabel;
+    pnlTargetTab: TPanel;
+    gbTargetAgent: TGroupBox;
+    lblTargetServerIP: TLabel;
+    edtTargetServerIP: TEdit;
+    lblTargetAgentPort: TLabel;
+    edtTargetAgentPort: TEdit;
+    lblTargetAgentPassword: TLabel;
+    edtTargetAgentPassword: TEdit;
+    btnTargetConnect: TButton;
+    lblTargetAgentStatusCaption: TLabel;
+    lblTargetAgentStatusValue: TLabel;
+    procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+    procedure FormResize(Sender: TObject);
+    procedure chkServerActiveClick(Sender: TObject);
+    procedure btnShowLogClick(Sender: TObject);
+    procedure btnMigrateClick(Sender: TObject);
+    procedure cbSourceSchemaChange(Sender: TObject);
+    procedure cbTargetSchemaChange(Sender: TObject);
+    procedure btnSourceConnectClick(Sender: TObject);
+    procedure btnTargetConnectClick(Sender: TObject);
+    procedure pcModeChange(Sender: TObject);
+    procedure sbMainMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,
+      Y: Integer);
+  private
+    FInitializing: Boolean;
+    FModeLocked: Boolean;
+    FSelectedMode: TMigratorMode;
+    FSettings: TMigratorSettings;
+    FServerSourceStatus: TConnectionStatus;
+    FServerTargetStatus: TConnectionStatus;
+    FSourceAgentStatus: TConnectionStatus;
+    FTargetAgentStatus: TConnectionStatus;
+    FSourceTablespacesRaw: string;
+    FTargetTablespacesRaw: string;
+    FLogger: TMigratorLogger;
+    FOrchestrator: TMigrationOrchestrator;
+    FLogForm: TLogForm;
+    FServerTcp: TIdTCPServer;
+    FContextLock: TCriticalSection;
+    FSourceContext: TIdContext;
+    FTargetContext: TIdContext;
+    FServerPassword: string;
+    FAgentClient: TIdTCPClient;
+    FAgentReaderThread: TThread;
+    FAgentKind: TAgentKind;
+    FAgentDisconnecting: Boolean;
+    procedure ApplySettingsToUI;
+    procedure SaveSettingsFromUI;
+    function ActiveMode: TMigratorMode;
+    function ActiveAgentKind: TAgentKind;
+    procedure LockModeIfNeeded;
+    procedure UpdateModeUI;
+    procedure SetMainStatus(const Text: string);
+    procedure AdjustStatusBarPanels;
+    procedure UpdateServerConnectionLabels;
+    procedure UpdateAgentStatusLabel(const AStatus: TConnectionStatus; ALabel: TLabel);
+    procedure EnsureLogForm;
+    procedure HandleLoggerLine(const Line: string);
+    procedure HandleOrchestratorProgress(const Stage: TMigrationStage; const Percent: Integer;
+      const MessageText: string);
+    procedure HandleOrchestratorCompleted(const AResult: TMigrationResult; const Summary: string);
+    function BuildMigrationRequest(out Request: TMigrationRequest; out ErrorText: string): Boolean;
+    procedure ResetAgentSchemaState(const IsSource: Boolean);
+    procedure SourceDbParamsChanged(Sender: TObject);
+    procedure TargetDbParamsChanged(Sender: TObject);
+    procedure UpdateModeStatusBar;
+    procedure LogFormClose(Sender: TObject; var Action: TCloseAction);
+    procedure ConfigureServer;
+    procedure StartServer;
+    procedure StopServer;
+    procedure ServerConnect(AContext: TIdContext);
+    procedure ServerDisconnect(AContext: TIdContext);
+    procedure ServerExecute(AContext: TIdContext);
+    procedure HandleServerMessage(AContext: TIdContext; Peer: TPeerState;
+      MessageObj: TJSONObject);
+    procedure HandleServerHello(AContext: TIdContext; Peer: TPeerState;
+      MessageObj: TJSONObject);
+    procedure HandleServerListSchemasResponse(Peer: TPeerState; MessageObj: TJSONObject);
+    procedure HandleServerTablespacesResponse(Peer: TPeerState; MessageObj: TJSONObject);
+    procedure ClearServerAgentContext(AContext: TIdContext);
+    function TryRegisterServerAgentContext(AContext: TIdContext; Kind: TAgentKind;
+      out ErrorText: string): Boolean;
+    function GetAgentContext(const IsSource: Boolean): TIdContext;
+    procedure SendJsonToContext(AContext: TIdContext; MessageObj: TJSONObject);
+    procedure RequestSchemaList(const IsSource: Boolean);
+    procedure RequestTablespaceList(const IsSource: Boolean; const SchemaName: string);
+    procedure ConnectAgent(Kind: TAgentKind; const ServerIP, PortText, Password: string;
+      StatusLabel: TLabel; var StatusValue: TConnectionStatus);
+    procedure DisconnectAgentConnection(const UpdateStatus: Boolean);
+    procedure StartAgentReader(const Kind: TAgentKind);
+    procedure ProcessAgentIncomingLine(const Line: string);
+    procedure HandleAgentRequest(MessageObj: TJSONObject);
+    procedure SendJsonToServer(MessageObj: TJSONObject);
+    function ResolveSqlPlusPath: string;
+    function BuildSqlConnectClause(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword: string): string;
+    function RunSqlPlusScript(const ScriptText: string; out OutputLines: TArray<string>;
+      out ErrorText: string): Boolean;
+    function QuerySchemas(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword: string; out Schemas: TArray<string>; out ErrorText: string): Boolean;
+    function QueryTablespaces(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword, SchemaName: string; out PrimaryTablespace: string;
+      out Tablespaces: TArray<string>; out ErrorText: string): Boolean;
+    procedure PostUiMessage(const MsgId: Cardinal; Payload: TObject);
+    procedure WMLogLine(var Msg: TMessage); message WM_APP + 101;
+    procedure WMOrchestratorProgress(var Msg: TMessage); message WM_APP + 102;
+    procedure WMOrchestratorCompleted(var Msg: TMessage); message WM_APP + 103;
+    procedure WMServerHello(var Msg: TMessage); message WM_APP + 104;
+    procedure WMSchemaResponse(var Msg: TMessage); message WM_APP + 105;
+    procedure WMTablespaceResponse(var Msg: TMessage); message WM_APP + 106;
+    procedure WMServerDisconnect(var Msg: TMessage); message WM_APP + 107;
+    procedure WMAgentDisconnect(var Msg: TMessage); message WM_APP + 108;
+  public
+  end;
+
+var
+  MainForm: TMainForm;
+
+implementation
+
+{$R *.dfm}
+
+const
+  FOOTER_TEXT = 'Made by Krossel Apps | https://kapps.at';
+  FOOTER_URL = 'https://kapps.at';
+  FOOTER_PANEL_MIN_WIDTH = 290;
+  WM_APP_LOG_LINE = WM_APP + 101;
+  WM_APP_ORCH_PROGRESS = WM_APP + 102;
+  WM_APP_ORCH_COMPLETED = WM_APP + 103;
+  WM_APP_SERVER_HELLO = WM_APP + 104;
+  WM_APP_SCHEMA_RESPONSE = WM_APP + 105;
+  WM_APP_TABLESPACE_RESPONSE = WM_APP + 106;
+  WM_APP_SERVER_DISCONNECT = WM_APP + 107;
+  WM_APP_AGENT_DISCONNECT = WM_APP + 108;
+
+type
+  TLogLinePayload = class
+  public
+    Line: string;
+  end;
+
+  TOrchestratorProgressPayload = class
+  public
+    Stage: TMigrationStage;
+    Percent: Integer;
+    MessageText: string;
+  end;
+
+  TOrchestratorCompletedPayload = class
+  public
+    ResultState: TMigrationResult;
+    Summary: string;
+  end;
+
+  TServerHelloPayload = class
+  public
+    Kind: TAgentKind;
+  end;
+
+  TSchemaResponsePayload = class
+  public
+    IsSource: Boolean;
+    OkValue: Boolean;
+    ErrorText: string;
+    Schemas: TArray<string>;
+  end;
+
+  TTablespaceResponsePayload = class
+  public
+    IsSource: Boolean;
+    OkValue: Boolean;
+    ErrorText: string;
+    PrimaryTS: string;
+    AllJoined: string;
+    HasMultipleTablespaces: Boolean;
+  end;
+
+  TServerDisconnectPayload = class
+  public
+    WasSource: Boolean;
+    WasTarget: Boolean;
+  end;
+
+  TAgentDisconnectPayload = class
+  public
+    Kind: TAgentKind;
+  end;
+
+constructor TPeerState.Create;
+begin
+  inherited Create;
+  Authenticated := False;
+  AgentKind := akUnknown;
+end;
+
+function AgentKindToString(const Kind: TAgentKind): string;
+begin
+  case Kind of
+    akSource: Result := 'Source';
+    akTarget: Result := 'Target';
+  else
+    Result := 'Unknown';
+  end;
+end;
+
+function ParseAgentKind(const Value: string): TAgentKind;
+begin
+  if SameText(Value, 'Source') then
+    Exit(akSource);
+  if SameText(Value, 'Target') then
+    Exit(akTarget);
+  Result := akUnknown;
+end;
+
+function JsonGetString(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: string = ''): string;
+var
+  Pair: TJSONPair;
+begin
+  Result := DefaultValue;
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit;
+  if not Assigned(Pair.JsonValue) then
+    Exit;
+  Result := Pair.JsonValue.Value;
+end;
+
+function JsonGetInteger(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: Integer): Integer;
+var
+  ValueText: string;
+begin
+  ValueText := JsonGetString(MessageObj, Name, '');
+  if ValueText = '' then
+    Exit(DefaultValue);
+  Result := StrToIntDef(ValueText, DefaultValue);
+end;
+
+function JsonGetBoolean(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: Boolean): Boolean;
+var
+  Pair: TJSONPair;
+begin
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit(DefaultValue);
+
+  if Pair.JsonValue is TJSONTrue then
+    Exit(True);
+  if Pair.JsonValue is TJSONFalse then
+    Exit(False);
+
+  Result := SameText(Pair.JsonValue.Value, 'true');
+end;
+
+function JsonGetArray(MessageObj: TJSONObject; const Name: string): TJSONArray;
+var
+  Pair: TJSONPair;
+begin
+  Result := nil;
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit;
+  if Pair.JsonValue is TJSONArray then
+    Result := TJSONArray(Pair.JsonValue);
+end;
+
+function EscapeSqlLiteral(const Value: string): string;
+begin
+  Result := StringReplace(Value, '''', '''''', [rfReplaceAll]);
+end;
+
+function EscapeSqlPassword(const Value: string): string;
+begin
+  Result := StringReplace(Value, '"', '""', [rfReplaceAll]);
+end;
+
+function JoinStringArray(const Values: TArray<string>): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 0 to High(Values) do
+  begin
+    if Values[I] = '' then
+      Continue;
+    if Result <> '' then
+      Result := Result + ',';
+    Result := Result + Values[I];
+  end;
+end;
+
+function JsonArrayToStrings(Arr: TJSONArray): TArray<string>;
+var
+  I: Integer;
+begin
+  if not Assigned(Arr) then
+  begin
+    SetLength(Result, 0);
+    Exit;
+  end;
+
+  SetLength(Result, Arr.Count);
+  for I := 0 to Arr.Count - 1 do
+    Result[I] := Arr.Items[I].Value;
+end;
+
+function StringArrayToJson(const Values: TArray<string>): TJSONArray;
+var
+  I: Integer;
+begin
+  Result := TJSONArray.Create;
+  for I := 0 to High(Values) do
+    Result.Add(Values[I]);
+end;
+procedure TMainForm.FormCreate(Sender: TObject);
+begin
+  FInitializing := True;
+  try
+    FSettings := TMigratorSettingsService.Load;
+    FServerSourceStatus := csDisconnected;
+    FServerTargetStatus := csDisconnected;
+    FSourceAgentStatus := csDisconnected;
+    FTargetAgentStatus := csDisconnected;
+    FSourceTablespacesRaw := '';
+    FTargetTablespacesRaw := '';
+    FModeLocked := False;
+    FSelectedMode := mmNone;
+    FAgentKind := akUnknown;
+    FAgentDisconnecting := False;
+
+    FContextLock := TCriticalSection.Create;
+    ConfigureServer;
+
+    FLogger := TMigratorLogger.Create;
+    FLogger.OnLog :=
+      procedure(const Line: string)
+      var
+        Payload: TLogLinePayload;
+      begin
+        Payload := TLogLinePayload.Create;
+        Payload.Line := Line;
+        PostUiMessage(WM_APP_LOG_LINE, Payload);
+      end;
+
+    FOrchestrator := TMigrationOrchestrator.Create(FLogger);
+    FOrchestrator.OnProgress :=
+      procedure(const Stage: TMigrationStage; const Percent: Integer; const MessageText: string)
+      var
+        Payload: TOrchestratorProgressPayload;
+      begin
+        Payload := TOrchestratorProgressPayload.Create;
+        Payload.Stage := Stage;
+        Payload.Percent := Percent;
+        Payload.MessageText := MessageText;
+        PostUiMessage(WM_APP_ORCH_PROGRESS, Payload);
+      end;
+    FOrchestrator.OnCompleted :=
+      procedure(const AResult: TMigrationResult; const Summary: string)
+      var
+        Payload: TOrchestratorCompletedPayload;
+      begin
+        Payload := TOrchestratorCompletedPayload.Create;
+        Payload.ResultState := AResult;
+        Payload.Summary := Summary;
+        PostUiMessage(WM_APP_ORCH_COMPLETED, Payload);
+      end;
+
+    ApplySettingsToUI;
+    btnShowLog.Visible := False;
+    ResetAgentSchemaState(True);
+    ResetAgentSchemaState(False);
+    edtSourceTablespace.ReadOnly := True;
+    edtTargetTablespace.ReadOnly := True;
+    UpdateServerConnectionLabels;
+    UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+    UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+
+    edtSourcePDB.OnExit := SourceDbParamsChanged;
+    edtSourceSYS.OnExit := SourceDbParamsChanged;
+    edtSourceSYSPassword.OnExit := SourceDbParamsChanged;
+    edtTargetPDB.OnExit := TargetDbParamsChanged;
+    edtTargetSYS.OnExit := TargetDbParamsChanged;
+    edtTargetSYSPassword.OnExit := TargetDbParamsChanged;
+
+    if sbMain.Panels.Count > 1 then
+      sbMain.Panels[1].Text := FOOTER_TEXT;
+    AdjustStatusBarPanels;
+    UpdateModeUI;
+  finally
+    FInitializing := False;
+  end;
+end;
+
+procedure TMainForm.FormDestroy(Sender: TObject);
+begin
+  DisconnectAgentConnection(False);
+  StopServer;
+
+  if Assigned(FOrchestrator) then
+  begin
+    FOrchestrator.OnProgress := nil;
+    FOrchestrator.OnCompleted := nil;
+  end;
+  if Assigned(FLogger) then
+    FLogger.OnLog := nil;
+
+  FLogForm := nil;
+  FOrchestrator.Free;
+  FLogger.Free;
+  FServerTcp.Free;
+  FContextLock.Free;
+end;
+
+procedure TMainForm.PostUiMessage(const MsgId: Cardinal; Payload: TObject);
+begin
+  if not Assigned(Payload) then
+    Exit;
+  if not HandleAllocated then
+  begin
+    Payload.Free;
+    Exit;
+  end;
+  if not PostMessage(Handle, MsgId, WPARAM(Payload), 0) then
+    Payload.Free;
+end;
+
+procedure TMainForm.WMLogLine(var Msg: TMessage);
+var
+  Payload: TLogLinePayload;
+begin
+  Payload := TLogLinePayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleLoggerLine(Payload.Line);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMOrchestratorProgress(var Msg: TMessage);
+var
+  Payload: TOrchestratorProgressPayload;
+begin
+  Payload := TOrchestratorProgressPayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleOrchestratorProgress(Payload.Stage, Payload.Percent, Payload.MessageText);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMOrchestratorCompleted(var Msg: TMessage);
+var
+  Payload: TOrchestratorCompletedPayload;
+begin
+  Payload := TOrchestratorCompletedPayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleOrchestratorCompleted(Payload.ResultState, Payload.Summary);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMServerHello(var Msg: TMessage);
+var
+  Payload: TServerHelloPayload;
+begin
+  Payload := TServerHelloPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.Kind = akSource then
+    begin
+      FServerSourceStatus := csConnected;
+      UpdateServerConnectionLabels;
+      RequestSchemaList(True);
+    end
+    else if Payload.Kind = akTarget then
+    begin
+      FServerTargetStatus := csConnected;
+      UpdateServerConnectionLabels;
+      RequestSchemaList(False);
+    end;
+
+    UpdateModeStatusBar;
+    if Assigned(FLogger) then
+      FLogger.AddInfo(msIdle, Format('%s agent connected to server',
+        [AgentKindToString(Payload.Kind)]));
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMSchemaResponse(var Msg: TMessage);
+var
+  Payload: TSchemaResponsePayload;
+  I: Integer;
+  Combo: TComboBox;
+begin
+  Payload := TSchemaResponsePayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.IsSource then
+      Combo := cbSourceSchema
+    else
+      Combo := cbTargetSchema;
+
+    Combo.Items.BeginUpdate;
+    try
+      Combo.Items.Clear;
+      if Payload.OkValue then
+      begin
+        for I := 0 to High(Payload.Schemas) do
+          Combo.Items.Add(Payload.Schemas[I]);
+      end;
+    finally
+      Combo.Items.EndUpdate;
+    end;
+
+    Combo.Enabled := Payload.OkValue and (Combo.Items.Count > 0);
+    if Combo.Enabled then
+    begin
+      Combo.ItemIndex := 0;
+      if Payload.IsSource then
+        cbSourceSchemaChange(Combo)
+      else
+        cbTargetSchemaChange(Combo);
+    end;
+
+    if Assigned(FLogger) then
+    begin
+      if not Payload.OkValue then
+        FLogger.AddError(msPrecheck, Payload.ErrorText)
+      else if Combo.Items.Count = 0 then
+        FLogger.AddWarning(msPrecheck, 'No schemas returned by agent');
+    end;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMTablespaceResponse(var Msg: TMessage);
+var
+  Payload: TTablespaceResponsePayload;
+begin
+  Payload := TTablespaceResponsePayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.IsSource then
+    begin
+      if Payload.OkValue then
+      begin
+        edtSourceTablespace.Text := Payload.PrimaryTS;
+        FSourceTablespacesRaw := Payload.AllJoined;
+        if Payload.HasMultipleTablespaces and Assigned(FLogger) then
+          FLogger.AddWarning(msPrecheck,
+            'Multiple tablespaces detected on Source. Auto-mapping will be used.');
+      end
+      else
+      begin
+        edtSourceTablespace.Clear;
+        FSourceTablespacesRaw := '';
+        if Assigned(FLogger) then
+          FLogger.AddError(msPrecheck, Payload.ErrorText);
+      end;
+    end
+    else
+    begin
+      if Payload.OkValue then
+      begin
+        edtTargetTablespace.Text := Payload.PrimaryTS;
+        FTargetTablespacesRaw := Payload.AllJoined;
+      end
+      else
+      begin
+        edtTargetTablespace.Clear;
+        FTargetTablespacesRaw := '';
+        if Assigned(FLogger) then
+          FLogger.AddError(msPrecheck, Payload.ErrorText);
+      end;
+    end;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMServerDisconnect(var Msg: TMessage);
+var
+  Payload: TServerDisconnectPayload;
+begin
+  Payload := TServerDisconnectPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.WasSource then
+    begin
+      FServerSourceStatus := csDisconnected;
+      ResetAgentSchemaState(True);
+    end;
+    if Payload.WasTarget then
+    begin
+      FServerTargetStatus := csDisconnected;
+      ResetAgentSchemaState(False);
+    end;
+    UpdateServerConnectionLabels;
+    UpdateModeStatusBar;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMAgentDisconnect(var Msg: TMessage);
+var
+  Payload: TAgentDisconnectPayload;
+begin
+  Payload := TAgentDisconnectPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+    if FAgentDisconnecting then
+      Exit;
+
+    if Payload.Kind = akSource then
+    begin
+      FSourceAgentStatus := csDisconnected;
+      UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+    end
+    else if Payload.Kind = akTarget then
+    begin
+      FTargetAgentStatus := csDisconnected;
+      UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+    end;
+    SetMainStatus('Disconnected from server');
+    if Assigned(FLogger) then
+      FLogger.AddWarning(msIdle, 'Agent connection closed');
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.FormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  if Assigned(FOrchestrator) and FOrchestrator.IsRunning then
+  begin
+    MessageDlg('Migration is still running. Wait until completion before closing.',
+      mtWarning, [mbOK], 0);
+    Action := caNone;
+    Exit;
+  end;
+  SaveSettingsFromUI;
+end;
+
+procedure TMainForm.FormResize(Sender: TObject);
+begin
+  AdjustStatusBarPanels;
+end;
+
+procedure TMainForm.SetMainStatus(const Text: string);
+begin
+  if sbMain.Panels.Count > 0 then
+    sbMain.Panels[0].Text := Text
+  else
+    sbMain.SimpleText := Text;
+end;
+
+procedure TMainForm.AdjustStatusBarPanels;
+var
+  LeftWidth: Integer;
+  FooterWidth: Integer;
+begin
+  if sbMain.Panels.Count < 2 then
+    Exit;
+
+  FooterWidth := FOOTER_PANEL_MIN_WIDTH;
+  if FooterWidth > sbMain.ClientWidth div 2 then
+    FooterWidth := sbMain.ClientWidth div 2;
+  if FooterWidth < 180 then
+    FooterWidth := 180;
+
+  LeftWidth := sbMain.ClientWidth - FooterWidth;
+  if LeftWidth < 220 then
+    LeftWidth := 220;
+
+  sbMain.Panels[0].Width := LeftWidth;
+  sbMain.Panels[1].Width := FooterWidth;
+end;
+
+procedure TMainForm.ApplySettingsToUI;
+begin
+  edtServerPort.Text := IntToStr(FSettings.ServerPort);
+  edtSourcePDB.Text := 'ORCLPDB';
+  edtTargetPDB.Text := 'ORCLPDB';
+  edtSourceSYS.Text := 'sys';
+  edtTargetSYS.Text := 'sys';
+  edtSourceAgentPort.Text := IntToStr(FSettings.ServerPort);
+  edtTargetAgentPort.Text := IntToStr(FSettings.ServerPort);
+  edtSourceServerIP.Text := '127.0.0.1';
+  edtTargetServerIP.Text := '127.0.0.1';
+
+  case FSettings.LastMode of
+    mmSource: pcMode.ActivePage := tsSource;
+    mmTarget: pcMode.ActivePage := tsTarget;
+  else
+    pcMode.ActivePage := tsServer;
+  end;
+end;
+
+procedure TMainForm.SaveSettingsFromUI;
+begin
+  FSettings.LastMode := ActiveMode;
+  if FModeLocked and (FSelectedMode <> mmNone) then
+    FSettings.LastMode := FSelectedMode;
+  FSettings.ServerPort := StrToIntDef(Trim(edtServerPort.Text), 5050);
+  TMigratorSettingsService.Save(FSettings);
+end;
+
+function TMainForm.ActiveMode: TMigratorMode;
+begin
+  if pcMode.ActivePage = tsServer then
+    Exit(mmServer);
+  if pcMode.ActivePage = tsSource then
+    Exit(mmSource);
+  if pcMode.ActivePage = tsTarget then
+    Exit(mmTarget);
+  Result := mmNone;
+end;
+
+function TMainForm.ActiveAgentKind: TAgentKind;
+begin
+  case ActiveMode of
+    mmSource: Result := akSource;
+    mmTarget: Result := akTarget;
+  else
+    Result := akUnknown;
+  end;
+end;
+
+procedure TMainForm.LockModeIfNeeded;
+begin
+  if FModeLocked then
+    Exit;
+
+  FSelectedMode := ActiveMode;
+  FModeLocked := FSelectedMode <> mmNone;
+  if not FModeLocked then
+    Exit;
+
+  tsServer.TabVisible := FSelectedMode = mmServer;
+  tsSource.TabVisible := FSelectedMode = mmSource;
+  tsTarget.TabVisible := FSelectedMode = mmTarget;
+  UpdateModeUI;
+  FLogger.AddInfo(msIdle, 'Mode locked: ' + ModeToString(FSelectedMode));
+end;
+
+procedure TMainForm.UpdateModeUI;
+begin
+  if FModeLocked then
+    Caption := 'Kapps Schema Migrator [' + ModeToString(FSelectedMode) + ']'
+  else
+    Caption := 'Kapps Schema Migrator';
+  UpdateModeStatusBar;
+end;
+
+procedure TMainForm.UpdateModeStatusBar;
+begin
+  if FModeLocked then
+    SetMainStatus(Format('Mode: %s | Source: %s | Target: %s',
+      [ModeToString(FSelectedMode), ConnectionStatusToString(FServerSourceStatus),
+      ConnectionStatusToString(FServerTargetStatus)]))
+  else
+    SetMainStatus('Mode is not locked yet');
+end;
+
+procedure TMainForm.UpdateServerConnectionLabels;
+begin
+  UpdateAgentStatusLabel(FServerSourceStatus, lblSourceStateValue);
+  UpdateAgentStatusLabel(FServerTargetStatus, lblTargetStateValue);
+end;
+
+procedure TMainForm.UpdateAgentStatusLabel(const AStatus: TConnectionStatus; ALabel: TLabel);
+begin
+  ALabel.Caption := ConnectionStatusToString(AStatus);
+  case AStatus of
+    csConnected: ALabel.Font.Color := clGreen;
+    csDisconnected: ALabel.Font.Color := clRed;
+    csAuthFailed: ALabel.Font.Color := clPurple;
+    csConnectionFailed: ALabel.Font.Color := clMaroon;
+  end;
+end;
+
+procedure TMainForm.EnsureLogForm;
+begin
+  if Assigned(FLogForm) then
+    Exit;
+  FLogForm := TLogForm.Create(Self);
+  FLogForm.OnClose := LogFormClose;
+  FLogForm.SetLines(FLogger.Snapshot);
+end;
+
+procedure TMainForm.HandleLoggerLine(const Line: string);
+begin
+  if Assigned(FLogForm) then
+    FLogForm.AppendLine(Line);
+end;
+
+procedure TMainForm.HandleOrchestratorProgress(const Stage: TMigrationStage;
+  const Percent: Integer; const MessageText: string);
+begin
+  pbMigration.Position := Percent;
+  lblProgressHint.Caption := MessageText;
+  SetMainStatus(Format('%s: %s', [StageToString(Stage), MessageText]));
+end;
+
+procedure TMainForm.HandleOrchestratorCompleted(const AResult: TMigrationResult;
+  const Summary: string);
+begin
+  btnMigrate.Enabled := True;
+  SetMainStatus(ResultToString(AResult) + ': ' + Summary);
+end;
+
+function TMainForm.BuildMigrationRequest(out Request: TMigrationRequest;
+  out ErrorText: string): Boolean;
+var
+  NewGuid: TGUID;
+begin
+  Result := False;
+  ErrorText := '';
+  Request := Default(TMigrationRequest);
+
+  if not chkServerActive.Checked then
+  begin
+    ErrorText := 'Server is not active';
+    Exit;
+  end;
+
+  if (FServerSourceStatus <> csConnected) or (FServerTargetStatus <> csConnected) then
+  begin
+    ErrorText := 'Source and Target must be connected';
+    Exit;
+  end;
+
+  if Trim(cbSourceSchema.Text) = '' then
+  begin
+    ErrorText := 'Source schema is not selected';
+    Exit;
+  end;
+
+  if Trim(cbTargetSchema.Text) = '' then
+  begin
+    ErrorText := 'Target schema is not selected';
+    Exit;
+  end;
+
+  if Trim(edtTargetTablespace.Text) = '' then
+  begin
+    ErrorText := 'Target tablespace is empty';
+    Exit;
+  end;
+
+  CreateGUID(NewGuid);
+  Request.JobId := LowerCase(GuidToString(NewGuid));
+  Request.JobId := StringReplace(Request.JobId, '{', '', [rfReplaceAll]);
+  Request.JobId := StringReplace(Request.JobId, '}', '', [rfReplaceAll]);
+  Request.JobId := StringReplace(Request.JobId, '-', '', [rfReplaceAll]);
+  Request.AgentDpumpRoot := FSettings.AgentDpumpRoot;
+  Request.ServerCacheRoot := FSettings.ServerCacheRoot;
+  Request.CleanBeforeImport := chkCleanBeforeImport.Checked;
+
+  Request.Source.Host := 'source-agent';
+  Request.Source.Port := 1521;
+  Request.Source.PDB := Trim(edtSourcePDB.Text);
+  Request.Source.SysUser := Trim(edtSourceSYS.Text);
+  Request.Source.SysPassword := edtSourceSYSPassword.Text;
+  Request.Source.Schema := Trim(cbSourceSchema.Text);
+  Request.Source.SchemaPassword := edtSourceSchemaPassword.Text;
+  if FSourceTablespacesRaw <> '' then
+    Request.Source.Tablespace := FSourceTablespacesRaw
+  else
+    Request.Source.Tablespace := Trim(edtSourceTablespace.Text);
+
+  Request.Target.Host := 'target-agent';
+  Request.Target.Port := 1521;
+  Request.Target.PDB := Trim(edtTargetPDB.Text);
+  Request.Target.SysUser := Trim(edtTargetSYS.Text);
+  Request.Target.SysPassword := edtTargetSYSPassword.Text;
+  Request.Target.Schema := Trim(cbTargetSchema.Text);
+  Request.Target.SchemaPassword := edtTargetSchemaPassword.Text;
+  Request.Target.Tablespace := Trim(edtTargetTablespace.Text);
+
+  Result := True;
+end;
+
+procedure TMainForm.ResetAgentSchemaState(const IsSource: Boolean);
+begin
+  if IsSource then
+  begin
+    cbSourceSchema.Items.Clear;
+    cbSourceSchema.Text := '';
+    cbSourceSchema.Enabled := False;
+    edtSourceTablespace.Clear;
+    FSourceTablespacesRaw := '';
+  end
+  else
+  begin
+    cbTargetSchema.Items.Clear;
+    cbTargetSchema.Text := '';
+    cbTargetSchema.Enabled := False;
+    edtTargetTablespace.Clear;
+    FTargetTablespacesRaw := '';
+  end;
+end;
+
+procedure TMainForm.SourceDbParamsChanged(Sender: TObject);
+begin
+  if not chkServerActive.Checked then
+    Exit;
+  if FServerSourceStatus <> csConnected then
+    Exit;
+  RequestSchemaList(True);
+end;
+
+procedure TMainForm.TargetDbParamsChanged(Sender: TObject);
+begin
+  if not chkServerActive.Checked then
+    Exit;
+  if FServerTargetStatus <> csConnected then
+    Exit;
+  RequestSchemaList(False);
+end;
+
+procedure TMainForm.ConfigureServer;
+begin
+  FServerTcp := TIdTCPServer.Create(Self);
+  FServerTcp.DefaultPort := 5050;
+  FServerTcp.OnConnect := ServerConnect;
+  FServerTcp.OnDisconnect := ServerDisconnect;
+  FServerTcp.OnExecute := ServerExecute;
+end;
+
+procedure TMainForm.StartServer;
+var
+  Port: Integer;
+begin
+  Port := StrToIntDef(Trim(edtServerPort.Text), 0);
+  if Port <= 0 then
+    raise Exception.Create('Server port is invalid');
+
+  if FServerTcp.Active then
+    FServerTcp.Active := False;
+
+  FServerPassword := edtServerPassword.Text;
+  FServerTcp.DefaultPort := Port;
+  FServerTcp.Active := True;
+
+  FServerSourceStatus := csDisconnected;
+  FServerTargetStatus := csDisconnected;
+  UpdateServerConnectionLabels;
+  ResetAgentSchemaState(True);
+  ResetAgentSchemaState(False);
+  SetMainStatus(Format('Listening on port %d | Source: Disconnected | Target: Disconnected', [Port]));
+  FLogger.AddInfo(msIdle, Format('Server listener started on port %d', [Port]));
+end;
+
+procedure TMainForm.StopServer;
+begin
+  if Assigned(FServerTcp) and FServerTcp.Active then
+  begin
+    try
+      FServerTcp.Active := False;
+    except
+      on E: Exception do
+        FLogger.AddWarning(msIdle, 'Error while stopping server listener: ' + E.Message);
+    end;
+  end;
+
+  FContextLock.Acquire;
+  try
+    FSourceContext := nil;
+    FTargetContext := nil;
+  finally
+    FContextLock.Release;
+  end;
+
+  FServerSourceStatus := csDisconnected;
+  FServerTargetStatus := csDisconnected;
+  UpdateServerConnectionLabels;
+  ResetAgentSchemaState(True);
+  ResetAgentSchemaState(False);
+  SetMainStatus('Disconnected');
+end;
+
+procedure TMainForm.ServerConnect(AContext: TIdContext);
+begin
+  AContext.Data := TPeerState.Create;
+end;
+
+procedure TMainForm.ServerDisconnect(AContext: TIdContext);
+var
+  Peer: TObject;
+begin
+  ClearServerAgentContext(AContext);
+
+  Peer := AContext.Data;
+  AContext.Data := nil;
+  Peer.Free;
+end;
+
+procedure TMainForm.ServerExecute(AContext: TIdContext);
+var
+  MessageLine: string;
+  JsonValue: TJSONValue;
+  MessageObj: TJSONObject;
+  Peer: TPeerState;
+begin
+  try
+    MessageLine := AContext.Connection.IOHandler.ReadLn;
+  except
+    Exit;
+  end;
+
+  if Trim(MessageLine) = '' then
+    Exit;
+
+  JsonValue := TJSONObject.ParseJSONValue(MessageLine);
+  if not (JsonValue is TJSONObject) then
+  begin
+    FLogger.AddWarning(msIdle, 'Server received non-JSON message');
+    JsonValue.Free;
+    Exit;
+  end;
+
+  MessageObj := TJSONObject(JsonValue);
+  try
+    Peer := TPeerState(AContext.Data);
+    HandleServerMessage(AContext, Peer, MessageObj);
+  finally
+    MessageObj.Free;
+  end;
+end;
+
+procedure TMainForm.HandleServerMessage(AContext: TIdContext; Peer: TPeerState;
+  MessageObj: TJSONObject);
+var
+  MessageType: string;
+begin
+  MessageType := JsonGetString(MessageObj, 'type', '');
+  if MessageType = '' then
+    Exit;
+
+  if SameText(MessageType, MSG_HELLO) then
+  begin
+    HandleServerHello(AContext, Peer, MessageObj);
+    Exit;
+  end;
+
+  if not Assigned(Peer) or not Peer.Authenticated then
+    Exit;
+
+  if SameText(MessageType, MSG_LIST_SCHEMAS_RESPONSE) then
+  begin
+    HandleServerListSchemasResponse(Peer, MessageObj);
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_GET_TABLESPACES_RESPONSE) then
+  begin
+    HandleServerTablespacesResponse(Peer, MessageObj);
+    Exit;
+  end;
+end;
+function TMainForm.TryRegisterServerAgentContext(AContext: TIdContext; Kind: TAgentKind;
+  out ErrorText: string): Boolean;
+begin
+  Result := False;
+  ErrorText := '';
+
+  FContextLock.Acquire;
+  try
+    case Kind of
+      akSource:
+        begin
+          if Assigned(FSourceContext) and (FSourceContext <> AContext) then
+          begin
+            ErrorText := 'Source already connected';
+            Exit;
+          end;
+          FSourceContext := AContext;
+        end;
+      akTarget:
+        begin
+          if Assigned(FTargetContext) and (FTargetContext <> AContext) then
+          begin
+            ErrorText := 'Target already connected';
+            Exit;
+          end;
+          FTargetContext := AContext;
+        end;
+    else
+      ErrorText := 'Unknown agent type';
+      Exit;
+    end;
+  finally
+    FContextLock.Release;
+  end;
+
+  Result := True;
+end;
+
+procedure TMainForm.HandleServerHello(AContext: TIdContext; Peer: TPeerState;
+  MessageObj: TJSONObject);
+var
+  AgentTypeText: string;
+  PasswordText: string;
+  Kind: TAgentKind;
+  ErrorText: string;
+  ResponseObj: TJSONObject;
+  Payload: TServerHelloPayload;
+begin
+  if not Assigned(Peer) then
+    Exit;
+
+  AgentTypeText := JsonGetString(MessageObj, 'agentType', '');
+  PasswordText := JsonGetString(MessageObj, 'password', '');
+  Kind := ParseAgentKind(AgentTypeText);
+
+  if (FServerPassword <> '') and (PasswordText <> FServerPassword) then
+  begin
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+      ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('reason', 'Auth failed');
+      SendJsonToContext(AContext, ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    AContext.Connection.Disconnect;
+    Exit;
+  end;
+
+  if not TryRegisterServerAgentContext(AContext, Kind, ErrorText) then
+  begin
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+      ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('reason', ErrorText);
+      SendJsonToContext(AContext, ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    AContext.Connection.Disconnect;
+    Exit;
+  end;
+
+  Peer.Authenticated := True;
+  Peer.AgentKind := Kind;
+
+  ResponseObj := TJSONObject.Create;
+  try
+    ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+    ResponseObj.AddPair('ok', TJSONTrue.Create);
+    ResponseObj.AddPair('agentType', AgentKindToString(Kind));
+    SendJsonToContext(AContext, ResponseObj);
+  finally
+    ResponseObj.Free;
+  end;
+
+  Payload := TServerHelloPayload.Create;
+  Payload.Kind := Kind;
+  PostUiMessage(WM_APP_SERVER_HELLO, Payload);
+end;
+
+procedure TMainForm.HandleServerListSchemasResponse(Peer: TPeerState; MessageObj: TJSONObject);
+var
+  OkValue: Boolean;
+  ErrorText: string;
+  Schemas: TArray<string>;
+  IsSource: Boolean;
+  Payload: TSchemaResponsePayload;
+begin
+  OkValue := JsonGetBoolean(MessageObj, 'ok', False);
+  ErrorText := JsonGetString(MessageObj, 'error', '');
+  Schemas := JsonArrayToStrings(JsonGetArray(MessageObj, 'schemas'));
+  IsSource := Peer.AgentKind = akSource;
+
+  Payload := TSchemaResponsePayload.Create;
+  Payload.IsSource := IsSource;
+  Payload.OkValue := OkValue;
+  Payload.ErrorText := ErrorText;
+  Payload.Schemas := Schemas;
+  PostUiMessage(WM_APP_SCHEMA_RESPONSE, Payload);
+end;
+
+procedure TMainForm.HandleServerTablespacesResponse(Peer: TPeerState; MessageObj: TJSONObject);
+var
+  OkValue: Boolean;
+  ErrorText: string;
+  PrimaryTS: string;
+  AllTS: TArray<string>;
+  AllJoined: string;
+  IsSource: Boolean;
+  Payload: TTablespaceResponsePayload;
+begin
+  OkValue := JsonGetBoolean(MessageObj, 'ok', False);
+  ErrorText := JsonGetString(MessageObj, 'error', '');
+  PrimaryTS := JsonGetString(MessageObj, 'primaryTablespace', '');
+  AllTS := JsonArrayToStrings(JsonGetArray(MessageObj, 'tablespaces'));
+  AllJoined := JoinStringArray(AllTS);
+  IsSource := Peer.AgentKind = akSource;
+
+  Payload := TTablespaceResponsePayload.Create;
+  Payload.IsSource := IsSource;
+  Payload.OkValue := OkValue;
+  Payload.ErrorText := ErrorText;
+  Payload.PrimaryTS := PrimaryTS;
+  Payload.AllJoined := AllJoined;
+  Payload.HasMultipleTablespaces := Length(AllTS) > 1;
+  PostUiMessage(WM_APP_TABLESPACE_RESPONSE, Payload);
+end;
+
+procedure TMainForm.ClearServerAgentContext(AContext: TIdContext);
+var
+  WasSource: Boolean;
+  WasTarget: Boolean;
+  Payload: TServerDisconnectPayload;
+begin
+  WasSource := False;
+  WasTarget := False;
+
+  FContextLock.Acquire;
+  try
+    if FSourceContext = AContext then
+    begin
+      FSourceContext := nil;
+      WasSource := True;
+    end;
+
+    if FTargetContext = AContext then
+    begin
+      FTargetContext := nil;
+      WasTarget := True;
+    end;
+  finally
+    FContextLock.Release;
+  end;
+
+  if not (WasSource or WasTarget) then
+    Exit;
+
+  Payload := TServerDisconnectPayload.Create;
+  Payload.WasSource := WasSource;
+  Payload.WasTarget := WasTarget;
+  PostUiMessage(WM_APP_SERVER_DISCONNECT, Payload);
+end;
+
+function TMainForm.GetAgentContext(const IsSource: Boolean): TIdContext;
+begin
+  FContextLock.Acquire;
+  try
+    if IsSource then
+      Result := FSourceContext
+    else
+      Result := FTargetContext;
+  finally
+    FContextLock.Release;
+  end;
+end;
+
+procedure TMainForm.SendJsonToContext(AContext: TIdContext; MessageObj: TJSONObject);
+begin
+  if not Assigned(AContext) then
+    Exit;
+  try
+    AContext.Connection.IOHandler.WriteLn(MessageObj.ToJSON, IndyTextEncoding_UTF8);
+  except
+    on E: Exception do
+      FLogger.AddWarning(msIdle, 'Failed to send message to agent: ' + E.Message);
+  end;
+end;
+
+procedure TMainForm.RequestSchemaList(const IsSource: Boolean);
+var
+  Context: TIdContext;
+  RequestObj: TJSONObject;
+begin
+  Context := GetAgentContext(IsSource);
+  if not Assigned(Context) then
+    Exit;
+
+  RequestObj := TJSONObject.Create;
+  try
+    RequestObj.AddPair('type', MSG_LIST_SCHEMAS_REQUEST);
+    RequestObj.AddPair('pdb', IfThen(IsSource, Trim(edtSourcePDB.Text), Trim(edtTargetPDB.Text)));
+    RequestObj.AddPair('sysUser', IfThen(IsSource, Trim(edtSourceSYS.Text), Trim(edtTargetSYS.Text)));
+    RequestObj.AddPair('sysPassword', IfThen(IsSource, edtSourceSYSPassword.Text, edtTargetSYSPassword.Text));
+    RequestObj.AddPair('dbHost', '127.0.0.1');
+    RequestObj.AddPair('dbPort', TJSONNumber.Create(1521));
+    SendJsonToContext(Context, RequestObj);
+  finally
+    RequestObj.Free;
+  end;
+
+  if IsSource then
+    FLogger.AddInfo(msPrecheck, 'Requested source schema list from agent')
+  else
+    FLogger.AddInfo(msPrecheck, 'Requested target schema list from agent');
+end;
+
+procedure TMainForm.RequestTablespaceList(const IsSource: Boolean; const SchemaName: string);
+var
+  Context: TIdContext;
+  RequestObj: TJSONObject;
+begin
+  Context := GetAgentContext(IsSource);
+  if not Assigned(Context) then
+    Exit;
+
+  RequestObj := TJSONObject.Create;
+  try
+    RequestObj.AddPair('type', MSG_GET_TABLESPACES_REQUEST);
+    RequestObj.AddPair('schema', SchemaName);
+    RequestObj.AddPair('pdb', IfThen(IsSource, Trim(edtSourcePDB.Text), Trim(edtTargetPDB.Text)));
+    RequestObj.AddPair('sysUser', IfThen(IsSource, Trim(edtSourceSYS.Text), Trim(edtTargetSYS.Text)));
+    RequestObj.AddPair('sysPassword', IfThen(IsSource, edtSourceSYSPassword.Text, edtTargetSYSPassword.Text));
+    RequestObj.AddPair('dbHost', '127.0.0.1');
+    RequestObj.AddPair('dbPort', TJSONNumber.Create(1521));
+    SendJsonToContext(Context, RequestObj);
+  finally
+    RequestObj.Free;
+  end;
+end;
+
+procedure TMainForm.ConnectAgent(Kind: TAgentKind; const ServerIP, PortText, Password: string;
+  StatusLabel: TLabel; var StatusValue: TConnectionStatus);
+var
+  Port: Integer;
+  HelloObj: TJSONObject;
+  AuthLine: string;
+  JsonValue: TJSONValue;
+  AuthObj: TJSONObject;
+  AuthOk: Boolean;
+begin
+  Port := StrToIntDef(Trim(PortText), 0);
+  if (Trim(ServerIP) = '') or (Port <= 0) then
+  begin
+    StatusValue := csConnectionFailed;
+    UpdateAgentStatusLabel(StatusValue, StatusLabel);
+    Exit;
+  end;
+
+  DisconnectAgentConnection(False);
+
+  FAgentClient := TIdTCPClient.Create(nil);
+  FAgentKind := Kind;
+  FAgentClient.Host := Trim(ServerIP);
+  FAgentClient.Port := Port;
+  FAgentClient.ConnectTimeout := 5000;
+  FAgentClient.ReadTimeout := -1;
+
+  try
+    FAgentClient.Connect;
+  except
+    on E: Exception do
+    begin
+      StatusValue := csConnectionFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      FLogger.AddError(msIdle, 'Agent connect failed: ' + E.Message);
+      FreeAndNil(FAgentClient);
+      Exit;
+    end;
+  end;
+
+  HelloObj := TJSONObject.Create;
+  try
+    HelloObj.AddPair('type', MSG_HELLO);
+    HelloObj.AddPair('agentType', AgentKindToString(Kind));
+    HelloObj.AddPair('password', Password);
+    SendJsonToServer(HelloObj);
+  finally
+    HelloObj.Free;
+  end;
+
+  try
+    AuthLine := FAgentClient.IOHandler.ReadLn;
+  except
+    on E: Exception do
+    begin
+      StatusValue := csConnectionFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      FLogger.AddError(msIdle, 'Auth result read failed: ' + E.Message);
+      DisconnectAgentConnection(False);
+      Exit;
+    end;
+  end;
+
+  JsonValue := TJSONObject.ParseJSONValue(AuthLine);
+  if not (JsonValue is TJSONObject) then
+  begin
+    StatusValue := csAuthFailed;
+    UpdateAgentStatusLabel(StatusValue, StatusLabel);
+    DisconnectAgentConnection(False);
+    Exit;
+  end;
+
+  AuthObj := TJSONObject(JsonValue);
+  try
+    AuthOk := JsonGetBoolean(AuthObj, 'ok', False);
+    if not AuthOk then
+    begin
+      StatusValue := csAuthFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      FLogger.AddError(msIdle, 'Auth failed: ' + JsonGetString(AuthObj, 'reason', 'Auth failed'));
+      DisconnectAgentConnection(False);
+      Exit;
+    end;
+  finally
+    AuthObj.Free;
+  end;
+
+  StatusValue := csConnected;
+  UpdateAgentStatusLabel(StatusValue, StatusLabel);
+  SetMainStatus('Connected to server');
+  FLogger.AddInfo(msIdle, Format('%s agent connected to server %s:%d',
+    [AgentKindToString(Kind), Trim(ServerIP), Port]));
+  StartAgentReader(Kind);
+end;
+
+procedure TMainForm.DisconnectAgentConnection(const UpdateStatus: Boolean);
+begin
+  FAgentDisconnecting := True;
+  try
+    if Assigned(FAgentReaderThread) then
+    begin
+      FAgentReaderThread.Terminate;
+      if Assigned(FAgentClient) and FAgentClient.Connected then
+      begin
+        try
+          FAgentClient.Disconnect;
+        except
+        end;
+      end;
+      FAgentReaderThread.WaitFor;
+      FreeAndNil(FAgentReaderThread);
+    end
+    else if Assigned(FAgentClient) and FAgentClient.Connected then
+    begin
+      try
+        FAgentClient.Disconnect;
+      except
+      end;
+    end;
+
+    FreeAndNil(FAgentClient);
+  finally
+    FAgentDisconnecting := False;
+  end;
+
+  if not UpdateStatus then
+    Exit;
+
+  if FAgentKind = akSource then
+  begin
+    FSourceAgentStatus := csDisconnected;
+    UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+  end
+  else if FAgentKind = akTarget then
+  begin
+    FTargetAgentStatus := csDisconnected;
+    UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+  end;
+end;
+
+procedure TMainForm.StartAgentReader(const Kind: TAgentKind);
+begin
+  if Assigned(FAgentReaderThread) then
+    Exit;
+
+  FAgentReaderThread := TThread.CreateAnonymousThread(
+    procedure
+    var
+      Line: string;
+      Payload: TAgentDisconnectPayload;
+    begin
+      while True do
+      begin
+        if FAgentDisconnecting then
+          Break;
+        if not Assigned(FAgentClient) then
+          Break;
+        if not FAgentClient.Connected then
+          Break;
+
+        try
+          Line := FAgentClient.IOHandler.ReadLn;
+        except
+          Break;
+        end;
+
+        if Trim(Line) = '' then
+          Continue;
+        ProcessAgentIncomingLine(Line);
+      end;
+
+      Payload := TAgentDisconnectPayload.Create;
+      Payload.Kind := Kind;
+      PostUiMessage(WM_APP_AGENT_DISCONNECT, Payload);
+    end);
+
+  FAgentReaderThread.FreeOnTerminate := False;
+  FAgentReaderThread.Start;
+end;
+
+procedure TMainForm.ProcessAgentIncomingLine(const Line: string);
+var
+  JsonValue: TJSONValue;
+  MessageObj: TJSONObject;
+begin
+  JsonValue := TJSONObject.ParseJSONValue(Line);
+  if not (JsonValue is TJSONObject) then
+  begin
+    JsonValue.Free;
+    Exit;
+  end;
+
+  MessageObj := TJSONObject(JsonValue);
+  try
+    HandleAgentRequest(MessageObj);
+  finally
+    MessageObj.Free;
+  end;
+end;
+
+procedure TMainForm.HandleAgentRequest(MessageObj: TJSONObject);
+var
+  MessageType: string;
+  DbHost: string;
+  DbPort: Integer;
+  PDB: string;
+  SysUser: string;
+  SysPassword: string;
+  SchemaName: string;
+  Schemas: TArray<string>;
+  Tablespaces: TArray<string>;
+  PrimaryTS: string;
+  ErrorText: string;
+  ResponseObj: TJSONObject;
+  OkValue: Boolean;
+begin
+  MessageType := JsonGetString(MessageObj, 'type', '');
+  if MessageType = '' then
+    Exit;
+
+  DbHost := JsonGetString(MessageObj, 'dbHost', '127.0.0.1');
+  DbPort := JsonGetInteger(MessageObj, 'dbPort', 1521);
+  PDB := JsonGetString(MessageObj, 'pdb', '');
+  SysUser := JsonGetString(MessageObj, 'sysUser', '');
+  SysPassword := JsonGetString(MessageObj, 'sysPassword', '');
+
+  if SameText(MessageType, MSG_LIST_SCHEMAS_REQUEST) then
+  begin
+    OkValue := QuerySchemas(DbHost, DbPort, PDB, SysUser, SysPassword, Schemas, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_LIST_SCHEMAS_RESPONSE);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('agentType', AgentKindToString(FAgentKind));
+      ResponseObj.AddPair('schemas', StringArrayToJson(Schemas));
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_GET_TABLESPACES_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    OkValue := QueryTablespaces(DbHost, DbPort, PDB, SysUser, SysPassword, SchemaName,
+      PrimaryTS, Tablespaces, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_GET_TABLESPACES_RESPONSE);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('agentType', AgentKindToString(FAgentKind));
+      ResponseObj.AddPair('primaryTablespace', PrimaryTS);
+      ResponseObj.AddPair('tablespaces', StringArrayToJson(Tablespaces));
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+end;
+
+procedure TMainForm.SendJsonToServer(MessageObj: TJSONObject);
+begin
+  if not Assigned(FAgentClient) then
+    Exit;
+  if not FAgentClient.Connected then
+    Exit;
+  try
+    FAgentClient.IOHandler.WriteLn(MessageObj.ToJSON, IndyTextEncoding_UTF8);
+  except
+    on E: Exception do
+      FLogger.AddWarning(msIdle, 'Failed to send message to server: ' + E.Message);
+  end;
+end;
+
+function TMainForm.ResolveSqlPlusPath: string;
+var
+  Candidate: string;
+begin
+  if Trim(FSettings.OracleClientBin) <> '' then
+  begin
+    Candidate := TPath.Combine(Trim(FSettings.OracleClientBin), 'sqlplus.exe');
+    if FileExists(Candidate) then
+      Exit(Candidate);
+  end;
+  Result := 'sqlplus.exe';
+end;
+
+function TMainForm.BuildSqlConnectClause(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword: string): string;
+var
+  HostValue: string;
+  PortValue: Integer;
+  Suffix: string;
+begin
+  HostValue := Trim(DbHost);
+  if HostValue = '' then
+    HostValue := '127.0.0.1';
+
+  PortValue := DbPort;
+  if PortValue <= 0 then
+    PortValue := 1521;
+
+  Suffix := '';
+  if SameText(Trim(SysUser), 'sys') then
+    Suffix := ' as sysdba';
+
+  Result := Format('connect %s/"%s"@//%s:%d/%s%s',
+    [Trim(SysUser), EscapeSqlPassword(SysPassword), HostValue, PortValue, Trim(PDB), Suffix]);
+end;
+
+function TMainForm.RunSqlPlusScript(const ScriptText: string; out OutputLines: TArray<string>;
+  out ErrorText: string): Boolean;
+var
+  ScriptFile: string;
+  ScriptList: TStringList;
+  ProcessResult: TProcessRunResult;
+  ExePath: string;
+  NewGuid: TGUID;
+begin
+  Result := False;
+  SetLength(OutputLines, 0);
+  ErrorText := '';
+
+  CreateGUID(NewGuid);
+  ScriptFile := TPath.Combine(TPath.GetTempPath,
+    'kapps_sqlplus_' + StringReplace(GuidToString(NewGuid), '-', '', [rfReplaceAll]) + '.sql');
+  ScriptFile := StringReplace(ScriptFile, '{', '', [rfReplaceAll]);
+  ScriptFile := StringReplace(ScriptFile, '}', '', [rfReplaceAll]);
+
+  ScriptList := TStringList.Create;
+  try
+    ScriptList.Text := ScriptText;
+    ScriptList.SaveToFile(ScriptFile, TEncoding.ANSI);
+  finally
+    ScriptList.Free;
+  end;
+
+  try
+    ExePath := ResolveSqlPlusPath;
+    ProcessResult := TProcessRunner.Run(ExePath, '-s /nolog @"' + ScriptFile + '"',
+      ExtractFilePath(ScriptFile), 180000);
+    OutputLines := ProcessResult.Output;
+    if ProcessResult.TimedOut then
+    begin
+      ErrorText := 'sqlplus timeout';
+      Exit(False);
+    end;
+    if ProcessResult.ExitCode <> 0 then
+    begin
+      ErrorText := Format('sqlplus exit code %d', [ProcessResult.ExitCode]);
+      Exit(False);
+    end;
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      Exit(False);
+    end;
+  end;
+
+  Result := True;
+  try
+    TFile.Delete(ScriptFile);
+  except
+  end;
+end;
+
+function TMainForm.QuerySchemas(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword: string; out Schemas: TArray<string>; out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  Items: TStringList;
+  I: Integer;
+begin
+  SetLength(Schemas, 0);
+  ErrorText := '';
+
+  if Trim(PDB) = '' then
+  begin
+    ErrorText := 'PDB is empty';
+    Exit(False);
+  end;
+  if Trim(SysUser) = '' then
+  begin
+    ErrorText := 'SYS user is empty';
+    Exit(False);
+  end;
+
+  ScriptText :=
+    'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause(DbHost, DbPort, PDB, SysUser, SysPassword) + sLineBreak +
+    'select username' + sLineBreak +
+    '  from dba_users' + sLineBreak +
+    ' where oracle_maintained = ''N''' + sLineBreak +
+    '   and username not in (''SYS'', ''SYSTEM'')' + sLineBreak +
+    ' order by username;' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  Items := TStringList.Create;
+  try
+    Items.CaseSensitive := False;
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if Trimmed = '' then
+        Continue;
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if SameText(Trimmed, 'Connected.') or StartsText('Connected to', Trimmed) then
+        Continue;
+      if StartsText('Disconnected from', Trimmed) then
+        Continue;
+      if ContainsText(Trimmed, 'rows selected') then
+        Continue;
+      if StartsText('SQL>', Trimmed) then
+        Continue;
+      if Pos(' ', Trimmed) > 0 then
+        Continue;
+      if Items.IndexOf(Trimmed) < 0 then
+        Items.Add(Trimmed);
+    end;
+
+    SetLength(Schemas, Items.Count);
+    for I := 0 to Items.Count - 1 do
+      Schemas[I] := Items[I];
+  finally
+    Items.Free;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.QueryTablespaces(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword, SchemaName: string; out PrimaryTablespace: string; out Tablespaces: TArray<string>;
+  out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  Parts: TArray<string>;
+  Items: TStringList;
+  DefaultTS: string;
+  I: Integer;
+begin
+  PrimaryTablespace := '';
+  SetLength(Tablespaces, 0);
+  ErrorText := '';
+  DefaultTS := '';
+
+  if Trim(SchemaName) = '' then
+  begin
+    ErrorText := 'Schema is empty';
+    Exit(False);
+  end;
+
+  ScriptText :=
+    'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause(DbHost, DbPort, PDB, SysUser, SysPassword) + sLineBreak +
+    'select ''DEFAULT|'' || default_tablespace from dba_users where username = upper(''' +
+    EscapeSqlLiteral(SchemaName) + ''');' + sLineBreak +
+    'select ''SEG|'' || tablespace_name || ''|'' || cnt' + sLineBreak +
+    '  from (' + sLineBreak +
+    '        select tablespace_name, count(*) cnt' + sLineBreak +
+    '          from dba_segments' + sLineBreak +
+    '         where owner = upper(''' + EscapeSqlLiteral(SchemaName) + ''')' + sLineBreak +
+    '         group by tablespace_name' + sLineBreak +
+    '         order by cnt desc' + sLineBreak +
+    '       );' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  Items := TStringList.Create;
+  try
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if Trimmed = '' then
+        Continue;
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if StartsText('DEFAULT|', Trimmed) then
+      begin
+        DefaultTS := Copy(Trimmed, Length('DEFAULT|') + 1, MaxInt);
+        Continue;
+      end;
+      if StartsText('SEG|', Trimmed) then
+      begin
+        Parts := SplitString(Trimmed, '|');
+        if Length(Parts) >= 2 then
+        begin
+          if PrimaryTablespace = '' then
+            PrimaryTablespace := Parts[1];
+          if Items.IndexOf(Parts[1]) < 0 then
+            Items.Add(Parts[1]);
+        end;
+      end;
+    end;
+
+    if (DefaultTS <> '') and (Items.IndexOf(DefaultTS) < 0) then
+      Items.Add(DefaultTS);
+    if PrimaryTablespace = '' then
+      PrimaryTablespace := DefaultTS;
+    if (PrimaryTablespace = '') and (Items.Count > 0) then
+      PrimaryTablespace := Items[0];
+
+    if (Items.Count = 0) and (PrimaryTablespace = '') then
+    begin
+      ErrorText := 'No tablespace data returned';
+      Exit(False);
+    end;
+
+    SetLength(Tablespaces, Items.Count);
+    for I := 0 to Items.Count - 1 do
+      Tablespaces[I] := Items[I];
+  finally
+    Items.Free;
+  end;
+
+  Result := True;
+end;
+procedure TMainForm.chkServerActiveClick(Sender: TObject);
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmServer then
+  begin
+    chkServerActive.Checked := False;
+    MessageDlg('Switch to Server tab before enabling listener.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if chkServerActive.Checked then
+  begin
+    try
+      StartServer;
+    except
+      on E: Exception do
+      begin
+        chkServerActive.Checked := False;
+        MessageDlg(E.Message, mtError, [mbOK], 0);
+      end;
+    end;
+  end
+  else
+  begin
+    StopServer;
+    FLogger.AddInfo(msIdle, 'Server listener stopped');
+  end;
+end;
+
+procedure TMainForm.btnShowLogClick(Sender: TObject);
+begin
+  EnsureLogForm;
+  FLogForm.Show;
+  FLogForm.BringToFront;
+end;
+
+procedure TMainForm.btnMigrateClick(Sender: TObject);
+var
+  Request: TMigrationRequest;
+  ErrorText: string;
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmServer then
+  begin
+    MessageDlg('Migration can be started only in Server mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  EnsureLogForm;
+  FLogger.Clear;
+  FLogForm.ClearLog;
+  btnShowLog.Visible := True;
+  FLogForm.Show;
+
+  btnMigrate.Enabled := False;
+  pbMigration.Position := 0;
+  lblProgressHint.Caption := 'Starting migration ...';
+
+  if not BuildMigrationRequest(Request, ErrorText) then
+  begin
+    FLogger.AddError(msPrecheck, ErrorText);
+    btnMigrate.Enabled := True;
+    Exit;
+  end;
+
+  try
+    FOrchestrator.Start(Request);
+  except
+    on E: Exception do
+    begin
+      FLogger.AddError(msFailed, E.Message);
+      btnMigrate.Enabled := True;
+    end;
+  end;
+end;
+
+procedure TMainForm.cbSourceSchemaChange(Sender: TObject);
+var
+  SchemaName: string;
+begin
+  edtSourceTablespace.Clear;
+  FSourceTablespacesRaw := '';
+  SchemaName := Trim(cbSourceSchema.Text);
+  if SchemaName = '' then
+    Exit;
+  if FServerSourceStatus <> csConnected then
+    Exit;
+  RequestTablespaceList(True, SchemaName);
+end;
+
+procedure TMainForm.cbTargetSchemaChange(Sender: TObject);
+var
+  SchemaName: string;
+begin
+  edtTargetTablespace.Clear;
+  FTargetTablespacesRaw := '';
+  SchemaName := Trim(cbTargetSchema.Text);
+  if SchemaName = '' then
+    Exit;
+  if FServerTargetStatus <> csConnected then
+    Exit;
+  RequestTablespaceList(False, SchemaName);
+end;
+
+procedure TMainForm.btnSourceConnectClick(Sender: TObject);
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmSource then
+  begin
+    MessageDlg('Source agent can connect only in Source mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  ConnectAgent(akSource, edtSourceServerIP.Text, edtSourceAgentPort.Text,
+    edtSourceAgentPassword.Text, lblSourceAgentStatusValue, FSourceAgentStatus);
+end;
+
+procedure TMainForm.btnTargetConnectClick(Sender: TObject);
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmTarget then
+  begin
+    MessageDlg('Target agent can connect only in Target mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  ConnectAgent(akTarget, edtTargetServerIP.Text, edtTargetAgentPort.Text,
+    edtTargetAgentPassword.Text, lblTargetAgentStatusValue, FTargetAgentStatus);
+end;
+
+procedure TMainForm.pcModeChange(Sender: TObject);
+begin
+  if FInitializing then
+    Exit;
+  if not FModeLocked then
+    LockModeIfNeeded
+  else
+    UpdateModeStatusBar;
+end;
+
+procedure TMainForm.sbMainMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,
+  Y: Integer);
+var
+  FooterStartX: Integer;
+begin
+  if Button <> mbLeft then
+    Exit;
+  if sbMain.Panels.Count < 2 then
+    Exit;
+
+  FooterStartX := sbMain.ClientWidth - sbMain.Panels[1].Width;
+  if X < FooterStartX then
+    Exit;
+
+  ShellExecute(Handle, 'open', PChar(FOOTER_URL), nil, nil, SW_SHOWNORMAL);
+end;
+
+procedure TMainForm.LogFormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  Action := caHide;
+end;
+
+end.

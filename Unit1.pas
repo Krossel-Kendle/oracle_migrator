@@ -1,0 +1,5356 @@
+﻿unit Unit1;
+
+interface
+
+uses
+  Winapi.Windows,
+  Winapi.Messages,
+  Winapi.ShellAPI,
+  System.SysUtils,
+  System.Classes,
+  System.StrUtils,
+  System.DateUtils,
+  System.JSON,
+  System.IOUtils,
+  System.SyncObjs,
+  System.UITypes,
+  Registry,
+  System.Generics.Collections,
+  System.NetEncoding,
+  System.Hash,
+  Vcl.Graphics,
+  Vcl.Controls,
+  Vcl.Forms,
+  Vcl.Dialogs,
+  Vcl.StdCtrls,
+  Vcl.ComCtrls,
+  Vcl.ExtCtrls,
+  IdContext,
+  IdCustomTCPServer,
+  IdGlobal,
+  IdIOHandler,
+  IdTCPServer,
+  IdTCPClient,
+  uTypes,
+  uSettings,
+  uLogger,
+  uLogForm,
+  uProcessRunner,
+  uProtocolMessages;
+
+type
+  TAgentKind = (akUnknown, akSource, akTarget);
+
+  TPeerState = class
+  public
+    Authenticated: Boolean;
+    AgentKind: TAgentKind;
+    constructor Create;
+  end;
+
+  TMainForm = class(TForm)
+    pcMode: TPageControl;
+    tsServer: TTabSheet;
+    tsSource: TTabSheet;
+    tsTarget: TTabSheet;
+    sbMain: TStatusBar;
+    gbServerTop: TGroupBox;
+    chkServerActive: TCheckBox;
+    lblServerPort: TLabel;
+    edtServerPort: TEdit;
+    lblServerPassword: TLabel;
+    edtServerPassword: TEdit;
+    pnlServerCenter: TPanel;
+    gbServerSource: TGroupBox;
+    lblSourceStateCaption: TLabel;
+    lblSourceStateValue: TLabel;
+    lblSourcePDB: TLabel;
+    edtSourcePDB: TEdit;
+    lblSourceSYS: TLabel;
+    edtSourceSYS: TEdit;
+    lblSourceSYSPassword: TLabel;
+    edtSourceSYSPassword: TEdit;
+    lblSourceSchema: TLabel;
+    cbSourceSchema: TComboBox;
+    lblSourceTablespace: TLabel;
+    edtSourceTablespace: TComboBox;
+    lblSourceSchemaPassword: TLabel;
+    edtSourceSchemaPassword: TEdit;
+    splServerAgents: TSplitter;
+    gbServerTarget: TGroupBox;
+    lblTargetStateCaption: TLabel;
+    lblTargetStateValue: TLabel;
+    lblTargetPDB: TLabel;
+    edtTargetPDB: TEdit;
+    lblTargetSYS: TLabel;
+    edtTargetSYS: TEdit;
+    lblTargetSYSPassword: TLabel;
+    edtTargetSYSPassword: TEdit;
+    lblTargetSchema: TLabel;
+    cbTargetSchema: TComboBox;
+    lblTargetTablespace: TLabel;
+    edtTargetTablespace: TComboBox;
+    lblTargetSchemaPassword: TLabel;
+    edtTargetSchemaPassword: TEdit;
+    chkCleanBeforeImport: TCheckBox;
+    gbActions: TGroupBox;
+    btnMigrate: TButton;
+    btnShowLog: TButton;
+    pbMigration: TProgressBar;
+    lblProgressHint: TLabel;
+    pnlSourceTab: TPanel;
+    gbSourceAgent: TGroupBox;
+    lblSourceServerIP: TLabel;
+    edtSourceServerIP: TEdit;
+    lblSourceAgentPort: TLabel;
+    edtSourceAgentPort: TEdit;
+    lblSourceAgentPassword: TLabel;
+    edtSourceAgentPassword: TEdit;
+    btnSourceConnect: TButton;
+    lblSourceAgentStatusCaption: TLabel;
+    lblSourceAgentStatusValue: TLabel;
+    pnlTargetTab: TPanel;
+    gbTargetAgent: TGroupBox;
+    lblTargetServerIP: TLabel;
+    edtTargetServerIP: TEdit;
+    lblTargetAgentPort: TLabel;
+    edtTargetAgentPort: TEdit;
+    lblTargetAgentPassword: TLabel;
+    edtTargetAgentPassword: TEdit;
+    btnTargetConnect: TButton;
+    lblTargetAgentStatusCaption: TLabel;
+    lblTargetAgentStatusValue: TLabel;
+    procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+    procedure FormResize(Sender: TObject);
+    procedure chkServerActiveClick(Sender: TObject);
+    procedure btnShowLogClick(Sender: TObject);
+    procedure btnMigrateClick(Sender: TObject);
+    procedure cbSourceSchemaChange(Sender: TObject);
+    procedure cbTargetSchemaChange(Sender: TObject);
+    procedure btnSourceConnectClick(Sender: TObject);
+    procedure btnTargetConnectClick(Sender: TObject);
+    procedure pcModeChange(Sender: TObject);
+    procedure sbMainMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,
+      Y: Integer);
+  private
+    FInitializing: Boolean;
+    FModeLocked: Boolean;
+    FSelectedMode: TMigratorMode;
+    FSettings: TMigratorSettings;
+    FServerSourceStatus: TConnectionStatus;
+    FServerTargetStatus: TConnectionStatus;
+    FSourceAgentStatus: TConnectionStatus;
+    FTargetAgentStatus: TConnectionStatus;
+    FSourceTablespacesRaw: string;
+    FTargetTablespacesRaw: string;
+    FLogger: TMigratorLogger;
+    FLogForm: TLogForm;
+    FServerTcp: TIdTCPServer;
+    FContextLock: TCriticalSection;
+    FSourceContext: TIdContext;
+    FTargetContext: TIdContext;
+    FServerPassword: string;
+    FSendLock: TCriticalSection;
+    FAgentClient: TIdTCPClient;
+    FAgentReaderThread: TThread;
+    FAgentKind: TAgentKind;
+    FAgentDisconnecting: Boolean;
+    FMigrationThread: TThread;
+    FMigrationRunningFlag: Integer;
+    FRpcLock: TCriticalSection;
+    FRpcEvent: TEvent;
+    FRpcPendingRequestId: string;
+    FRpcPendingExpectedType: string;
+    FRpcPendingKind: TAgentKind;
+    FRpcResponseJson: string;
+    FMaskSourceSysPassword: string;
+    FMaskSourceSchemaPassword: string;
+    FMaskTargetSysPassword: string;
+    FMaskTargetSchemaPassword: string;
+    FAgentIncomingFileStream: TFileStream;
+    FAgentIncomingFilePath: string;
+    FAgentOutgoingFileStream: TFileStream;
+    FAgentOutgoingFilePath: string;
+    FAgentOutgoingFileSize: Int64;
+    FAgentOutgoingFileSha256: string;
+    procedure ApplySettingsToUI;
+    procedure SaveSettingsFromUI;
+    function ActiveMode: TMigratorMode;
+    procedure LockModeIfNeeded;
+    procedure UpdateModeUI;
+    procedure SetMainStatus(const Text: string);
+    procedure AdjustStatusBarPanels;
+    procedure UpdateServerConnectionLabels;
+    procedure UpdateAgentStatusLabel(const AStatus: TConnectionStatus; ALabel: TLabel);
+    procedure UpdateAgentConnectButtons;
+    procedure UpdateAgentConnectionControls;
+    procedure EnsureLogForm;
+    procedure HandleLoggerLine(const Line: string);
+    procedure HandleOrchestratorProgress(const Stage: TMigrationStage; const Percent: Integer;
+      const MessageText: string);
+    procedure HandleOrchestratorCompleted(const AResult: TMigrationResult; const Summary: string);
+    function BuildMigrationRequest(out Request: TMigrationRequest; out ErrorText: string): Boolean;
+    procedure ResetAgentSchemaState(const IsSource: Boolean);
+    procedure SourceDbParamsChanged(Sender: TObject);
+    procedure TargetDbParamsChanged(Sender: TObject);
+    procedure UpdateModeStatusBar;
+    procedure UpdateMigrateButtonState;
+    procedure LogFormClose(Sender: TObject; var Action: TCloseAction);
+    procedure ConfigureServer;
+    procedure StartServer;
+    procedure StopServer;
+    procedure ServerConnect(AContext: TIdContext);
+    procedure ServerDisconnect(AContext: TIdContext);
+    procedure ServerExecute(AContext: TIdContext);
+    procedure HandleServerMessage(AContext: TIdContext; Peer: TPeerState;
+      MessageObj: TJSONObject);
+    procedure HandleServerHello(AContext: TIdContext; Peer: TPeerState;
+      MessageObj: TJSONObject);
+    procedure HandleServerListSchemasResponse(Peer: TPeerState; MessageObj: TJSONObject);
+    procedure HandleServerTablespacesResponse(Peer: TPeerState; MessageObj: TJSONObject);
+    procedure ClearServerAgentContext(AContext: TIdContext);
+    function TryRegisterServerAgentContext(AContext: TIdContext; Kind: TAgentKind;
+      out ErrorText: string): Boolean;
+    function GetAgentContext(const IsSource: Boolean): TIdContext;
+    procedure SendJsonToContext(AContext: TIdContext; MessageObj: TJSONObject;
+      const RaiseOnError: Boolean = False);
+    procedure RequestSchemaList(const IsSource: Boolean);
+    procedure RequestTablespaceList(const IsSource: Boolean; const SchemaName: string);
+    procedure ConnectAgent(Kind: TAgentKind; const ServerIP, PortText, Password: string;
+      StatusLabel: TLabel; var StatusValue: TConnectionStatus);
+    procedure DisconnectAgentConnection(const UpdateStatus: Boolean);
+    procedure StartAgentReader(const Kind: TAgentKind);
+    procedure ProcessAgentIncomingLine(const Line: string);
+    procedure HandleAgentRequest(MessageObj: TJSONObject);
+    procedure SendJsonToServer(MessageObj: TJSONObject);
+    function ResolveSqlPlusPath: string;
+    function BuildSqlConnectClause(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword: string): string;
+    function RunSqlPlusScript(const ScriptText: string; out OutputLines: TArray<string>;
+      out ErrorText: string): Boolean;
+    function QuerySchemas(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword: string; out Schemas: TArray<string>; out ErrorText: string): Boolean;
+    function QueryTablespaces(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+      SysPassword, SchemaName: string; out PrimaryTablespace: string;
+      out Tablespaces: TArray<string>; out ErrorText: string): Boolean;
+    function ResolveOracleToolPath(const ToolFileName: string): string;
+    function RunOracleTool(const ToolFileName, Arguments, WorkDir: string;
+      const TimeoutMs: Cardinal; const ProgressMessageType, RequestId: string;
+      out OutputLines: TArray<string>; out ErrorText: string): Boolean;
+    function AgentRunPrecheck(const DpumpRoot, PDB, SysUser, SysPassword, SchemaName,
+      RequiredTablespace: string;
+      out SqlPlusPath, ExpdpPath, ImpdpPath, ErrorText: string): Boolean;
+    function EnsureAgentFolders(const DpumpRoot: string; out CurrentDir, TmpDir: string;
+      out ErrorText: string): Boolean;
+    function PrepareAgentFolders(const DpumpRoot: string; out CurrentDir, TmpDir: string;
+      out ErrorText: string): Boolean;
+    function ClearDirectoryContents(const DirectoryPath: string; out ErrorText: string): Boolean;
+    function AgentRunPrepareDirectory(const DpumpRoot, PDB, SysUser, SysPassword,
+      SchemaName: string; out ErrorText: string): Boolean;
+    function AgentRunExport(const DpumpRoot, PDB, SchemaName, SchemaPassword,
+      SysUser, SysPassword, JobId, RequestId: string; out ExportFiles: TArray<string>;
+      out ErrorText: string): Boolean;
+    function AgentRunClean(const PDB, SysUser, SysPassword, SchemaName,
+      SchemaPassword, TargetTablespace: string; out ErrorText: string): Boolean;
+    function AgentRunImport(const DpumpRoot, PDB, SourceSchemaName, SchemaName, SchemaPassword,
+      TargetTablespace, SourceTablespacesRaw, JobId, RequestId: string;
+      out ImportLogFile: string; out ErrorText: string): Boolean;
+    function AgentRunPostCheck(const PDB, SysUser, SysPassword,
+      SchemaName: string; out InvalidSummary: string; out ErrorText: string): Boolean;
+    procedure AgentCloseIncomingFile;
+    procedure AgentCloseOutgoingFile;
+    function BuildRequestId: string;
+    procedure ReportDistributedProgress(const Stage: TMigrationStage; const Percent: Integer;
+      const MessageText: string);
+    procedure FinishDistributedMigration(const AResult: TMigrationResult; const Summary: string);
+    function IsDistributedMigrationRunning: Boolean;
+    procedure StartDistributedMigration(const Request: TMigrationRequest);
+    procedure RunDistributedMigration(const Request: TMigrationRequest);
+    function SendAgentRequest(const Kind: TAgentKind; RequestObj: TJSONObject;
+      const ExpectedType: string; const TimeoutMs: Cardinal; out ResponseObj: TJSONObject;
+      out ErrorText: string): Boolean;
+    function TryCapturePendingResponse(Peer: TPeerState; MessageObj: TJSONObject): Boolean;
+    function ExecutePrecheckStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+    function ExecutePrepareFoldersStage(const Request: TMigrationRequest;
+      out JobWorkDir: string; out ErrorText: string): Boolean;
+    procedure CleanupServerCacheRoot(const CacheRoot: string; const KeepDays: Integer);
+    function ExecutePrepareDirectoryStage(const Request: TMigrationRequest;
+      out ErrorText: string): Boolean;
+    function ExecuteExportStage(const Request: TMigrationRequest;
+      out ExportFiles: TArray<string>; out ErrorText: string): Boolean;
+    function ExecuteTransferStage(const Request: TMigrationRequest; const JobWorkDir: string;
+      const ExportFiles: TArray<string>; out ErrorText: string): Boolean;
+    function ExecuteCleanStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+    function ExecuteImportStage(const Request: TMigrationRequest; const JobWorkDir: string;
+      out ErrorText: string): Boolean;
+    function ExecutePostCheckStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+    function FetchFileFromAgentToServer(const Kind: TAgentKind; const DpumpRoot, FileName,
+      JobWorkDir: string; out ErrorText: string): Boolean;
+    function GetAgentFileDigest(const Kind: TAgentKind; const DpumpRoot, FileName: string;
+      out FileSize: Int64; out Sha256, ErrorText: string): Boolean;
+    function TransferSingleFile(const Request: TMigrationRequest; const FileName, JobWorkDir: string;
+      out ErrorText: string): Boolean;
+    procedure PostUiMessage(const MsgId: Cardinal; Payload: TObject);
+    procedure WMLogLine(var Msg: TMessage); message WM_APP + 101;
+    procedure WMOrchestratorProgress(var Msg: TMessage); message WM_APP + 102;
+    procedure WMOrchestratorCompleted(var Msg: TMessage); message WM_APP + 103;
+    procedure WMServerHello(var Msg: TMessage); message WM_APP + 104;
+    procedure WMSchemaResponse(var Msg: TMessage); message WM_APP + 105;
+    procedure WMTablespaceResponse(var Msg: TMessage); message WM_APP + 106;
+    procedure WMServerDisconnect(var Msg: TMessage); message WM_APP + 107;
+    procedure WMAgentDisconnect(var Msg: TMessage); message WM_APP + 108;
+  public
+  end;
+
+var
+  MainForm: TMainForm;
+
+implementation
+
+{$R *.dfm}
+
+const
+  FOOTER_TEXT = 'Made by Krossel Apps | https://kapps.at';
+  FOOTER_URL = 'https://kapps.at';
+  FOOTER_PANEL_MIN_WIDTH = 290;
+  WM_APP_LOG_LINE = WM_APP + 101;
+  WM_APP_ORCH_PROGRESS = WM_APP + 102;
+  WM_APP_ORCH_COMPLETED = WM_APP + 103;
+  WM_APP_SERVER_HELLO = WM_APP + 104;
+  WM_APP_SCHEMA_RESPONSE = WM_APP + 105;
+  WM_APP_TABLESPACE_RESPONSE = WM_APP + 106;
+  WM_APP_SERVER_DISCONNECT = WM_APP + 107;
+  WM_APP_AGENT_DISCONNECT = WM_APP + 108;
+
+type
+  TLogLinePayload = class
+  public
+    Line: string;
+  end;
+
+  TOrchestratorProgressPayload = class
+  public
+    Stage: TMigrationStage;
+    Percent: Integer;
+    MessageText: string;
+  end;
+
+  TOrchestratorCompletedPayload = class
+  public
+    ResultState: TMigrationResult;
+    Summary: string;
+  end;
+
+  TServerHelloPayload = class
+  public
+    Kind: TAgentKind;
+  end;
+
+  TSchemaResponsePayload = class
+  public
+    IsSource: Boolean;
+    OkValue: Boolean;
+    ErrorText: string;
+    RequestedPDB: string;
+    Schemas: TArray<string>;
+  end;
+
+  TTablespaceResponsePayload = class
+  public
+    IsSource: Boolean;
+    OkValue: Boolean;
+    ErrorText: string;
+    RequestedSchema: string;
+    PrimaryTS: string;
+    AllTablespaces: TArray<string>;
+    AllJoined: string;
+    HasMultipleTablespaces: Boolean;
+  end;
+
+  TServerDisconnectPayload = class
+  public
+    WasSource: Boolean;
+    WasTarget: Boolean;
+  end;
+
+  TAgentDisconnectPayload = class
+  public
+    Kind: TAgentKind;
+  end;
+
+constructor TPeerState.Create;
+begin
+  inherited Create;
+  Authenticated := False;
+  AgentKind := akUnknown;
+end;
+
+function AgentKindToString(const Kind: TAgentKind): string;
+begin
+  case Kind of
+    akSource: Result := 'Source';
+    akTarget: Result := 'Target';
+  else
+    Result := 'Unknown';
+  end;
+end;
+
+function ParseAgentKind(const Value: string): TAgentKind;
+begin
+  if SameText(Value, 'Source') then
+    Exit(akSource);
+  if SameText(Value, 'Target') then
+    Exit(akTarget);
+  Result := akUnknown;
+end;
+
+function ExpandEnvironmentVars(const Value: string): string;
+var
+  RequiredLen: DWORD;
+begin
+  Result := Value;
+  if Value = '' then
+    Exit;
+  RequiredLen := ExpandEnvironmentStrings(PChar(Value), nil, 0);
+  if RequiredLen = 0 then
+    Exit;
+  SetLength(Result, RequiredLen - 1);
+  if ExpandEnvironmentStrings(PChar(Value), PChar(Result), RequiredLen) = 0 then
+    Result := Value;
+end;
+
+function NormalizePathToken(const Value: string): string;
+begin
+  Result := Trim(StringReplace(Value, '"', '', [rfReplaceAll]));
+  Result := ExpandEnvironmentVars(Result);
+  Result := Trim(Result);
+end;
+
+function TryResolveOracleToolFromRegistry(const ToolFileName: string; out ToolPath: string): Boolean;
+const
+  ORACLE_REG_KEY_1 = 'SOFTWARE\ORACLE';
+  ORACLE_REG_KEY_2 = 'SOFTWARE\WOW6432Node\ORACLE';
+var
+  Reg: TRegistry;
+  SubKeys: TStringList;
+  OracleHome: string;
+  Candidate: string;
+  function TryOracleHome(const HomeValue: string): Boolean;
+  var
+    HomePath: string;
+  begin
+    Result := False;
+    HomePath := NormalizePathToken(HomeValue);
+    if HomePath = '' then
+      Exit;
+    Candidate := TPath.Combine(HomePath, 'bin\' + ToolFileName);
+    if TFile.Exists(Candidate) then
+    begin
+      ToolPath := Candidate;
+      Exit(True);
+    end;
+    Candidate := TPath.Combine(HomePath, ToolFileName);
+    if TFile.Exists(Candidate) then
+    begin
+      ToolPath := Candidate;
+      Exit(True);
+    end;
+  end;
+  function ScanRoot(const KeyPath: string): Boolean;
+  var
+    J: Integer;
+  begin
+    Result := False;
+    if not Reg.OpenKeyReadOnly(KeyPath) then
+      Exit;
+    try
+      if Reg.ValueExists('ORACLE_HOME') then
+      begin
+        OracleHome := Reg.ReadString('ORACLE_HOME');
+        if TryOracleHome(OracleHome) then
+          Exit(True);
+      end;
+      SubKeys.Clear;
+      Reg.GetKeyNames(SubKeys);
+    finally
+      Reg.CloseKey;
+    end;
+
+    for J := 0 to SubKeys.Count - 1 do
+    begin
+      if not Reg.OpenKeyReadOnly(KeyPath + '\' + SubKeys[J]) then
+        Continue;
+      try
+        if Reg.ValueExists('ORACLE_HOME') then
+        begin
+          OracleHome := Reg.ReadString('ORACLE_HOME');
+          if TryOracleHome(OracleHome) then
+            Exit(True);
+        end;
+      finally
+        Reg.CloseKey;
+      end;
+    end;
+  end;
+begin
+  Result := False;
+  ToolPath := '';
+  Reg := TRegistry.Create(KEY_READ);
+  SubKeys := TStringList.Create;
+  try
+    Reg.RootKey := HKEY_LOCAL_MACHINE;
+    if ScanRoot(ORACLE_REG_KEY_1) then
+      Exit(True);
+    if ScanRoot(ORACLE_REG_KEY_2) then
+      Exit(True);
+  finally
+    SubKeys.Free;
+    Reg.Free;
+  end;
+end;
+
+function TryResolveExecutable(const ExePath: string; var ResolvedPath: string): Boolean;
+var
+  InputPath: string;
+  SearchPathValue: string;
+  PathParts: TStringList;
+  SearchDirs: TStringList;
+  Part: string;
+  NormalizedPart: string;
+  OracleHome: string;
+  Candidate: string;
+  BaseName: string;
+  HasPathSeparator: Boolean;
+begin
+  Result := False;
+  ResolvedPath := '';
+  InputPath := NormalizePathToken(ExePath);
+  if InputPath = '' then
+    Exit;
+
+  if TFile.Exists(InputPath) then
+  begin
+    ResolvedPath := ExpandFileName(InputPath);
+    Exit(True);
+  end;
+
+  HasPathSeparator := (Pos('\', InputPath) > 0) or (Pos('/', InputPath) > 0);
+  if HasPathSeparator then
+  begin
+    if TPath.GetExtension(InputPath) = '' then
+    begin
+      Candidate := InputPath + '.exe';
+      if TFile.Exists(Candidate) then
+      begin
+        ResolvedPath := ExpandFileName(Candidate);
+        Exit(True);
+      end;
+    end;
+    Exit(False);
+  end;
+
+  BaseName := InputPath;
+  if TPath.GetExtension(BaseName) = '' then
+    BaseName := BaseName + '.exe';
+
+  SearchPathValue := GetEnvironmentVariable('PATH');
+  SearchDirs := TStringList.Create;
+  PathParts := TStringList.Create;
+  try
+    OracleHome := NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'));
+    if OracleHome <> '' then
+    begin
+      Candidate := TPath.Combine(OracleHome, 'bin');
+      if TDirectory.Exists(Candidate) and (SearchDirs.IndexOf(Candidate) < 0) then
+        SearchDirs.Add(Candidate);
+    end;
+
+    PathParts.StrictDelimiter := True;
+    PathParts.Delimiter := ';';
+    PathParts.DelimitedText := SearchPathValue;
+    for Part in PathParts do
+    begin
+      NormalizedPart := NormalizePathToken(Part);
+      if NormalizedPart = '' then
+        Continue;
+      if SearchDirs.IndexOf(NormalizedPart) < 0 then
+        SearchDirs.Add(NormalizedPart);
+    end;
+
+    for NormalizedPart in SearchDirs do
+    begin
+      Candidate := TPath.Combine(NormalizedPart, BaseName);
+      if TFile.Exists(Candidate) then
+      begin
+        ResolvedPath := Candidate;
+        Exit(True);
+      end;
+    end;
+  finally
+    SearchDirs.Free;
+    PathParts.Free;
+  end;
+end;
+
+function JsonGetString(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: string = ''): string;
+var
+  Pair: TJSONPair;
+begin
+  Result := DefaultValue;
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit;
+  if not Assigned(Pair.JsonValue) then
+    Exit;
+  Result := Pair.JsonValue.Value;
+end;
+
+function JsonGetInteger(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: Integer): Integer;
+var
+  ValueText: string;
+begin
+  ValueText := JsonGetString(MessageObj, Name, '');
+  if ValueText = '' then
+    Exit(DefaultValue);
+  Result := StrToIntDef(ValueText, DefaultValue);
+end;
+
+function JsonGetBoolean(MessageObj: TJSONObject; const Name: string;
+  const DefaultValue: Boolean): Boolean;
+var
+  Pair: TJSONPair;
+begin
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit(DefaultValue);
+
+  if Pair.JsonValue is TJSONTrue then
+    Exit(True);
+  if Pair.JsonValue is TJSONFalse then
+    Exit(False);
+
+  Result := SameText(Pair.JsonValue.Value, 'true');
+end;
+
+function JsonGetArray(MessageObj: TJSONObject; const Name: string): TJSONArray;
+var
+  Pair: TJSONPair;
+begin
+  Result := nil;
+  Pair := MessageObj.Get(Name);
+  if not Assigned(Pair) then
+    Exit;
+  if Pair.JsonValue is TJSONArray then
+    Result := TJSONArray(Pair.JsonValue);
+end;
+
+function EscapeSqlLiteral(const Value: string): string;
+begin
+  Result := StringReplace(Value, '''', '''''', [rfReplaceAll]);
+end;
+
+function EscapeSqlPassword(const Value: string): string;
+begin
+  Result := StringReplace(Value, '"', '""', [rfReplaceAll]);
+end;
+
+function JoinStringArray(const Values: TArray<string>): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 0 to High(Values) do
+  begin
+    if Values[I] = '' then
+      Continue;
+    if Result <> '' then
+      Result := Result + ',';
+    Result := Result + Values[I];
+  end;
+end;
+
+function SplitAndTrim(const Value: string; const Delimiter: Char): TArray<string>;
+var
+  Items: TStringList;
+  I: Integer;
+  Count: Integer;
+  Token: string;
+begin
+  SetLength(Result, 0);
+  if Value = '' then
+    Exit;
+  Items := TStringList.Create;
+  try
+    Items.StrictDelimiter := True;
+    Items.Delimiter := Delimiter;
+    Items.DelimitedText := Value;
+    SetLength(Result, Items.Count);
+    Count := 0;
+    for I := 0 to Items.Count - 1 do
+    begin
+      Token := Trim(Items[I]);
+      if Token = '' then
+        Continue;
+      Result[Count] := Token;
+      Inc(Count);
+    end;
+    SetLength(Result, Count);
+  finally
+    Items.Free;
+  end;
+end;
+
+function JsonArrayToStrings(Arr: TJSONArray): TArray<string>;
+var
+  I: Integer;
+begin
+  if not Assigned(Arr) then
+  begin
+    SetLength(Result, 0);
+    Exit;
+  end;
+
+  SetLength(Result, Arr.Count);
+  for I := 0 to Arr.Count - 1 do
+    Result[I] := Arr.Items[I].Value;
+end;
+
+function StringArrayToJson(const Values: TArray<string>): TJSONArray;
+var
+  I: Integer;
+begin
+  Result := TJSONArray.Create;
+  for I := 0 to High(Values) do
+    Result.Add(Values[I]);
+end;
+
+function IsBenignImportWarning(const LineText: string): Boolean;
+var
+  UpperLine: string;
+begin
+  UpperLine := UpperCase(Trim(LineText));
+  Result := (Pos('ORA-01917', UpperLine) > 0) or
+            (Pos('ORA-31684', UpperLine) > 0) or
+            (Pos('ORA-39082', UpperLine) > 0);
+end;
+
+function MaskProgressLine(const LineText, SourceSysPassword, SourceSchemaPassword,
+  TargetSysPassword, TargetSchemaPassword: string): string;
+var
+  Secrets: TArray<string>;
+begin
+  SetLength(Secrets, 4);
+  Secrets[0] := SourceSysPassword;
+  Secrets[1] := SourceSchemaPassword;
+  Secrets[2] := TargetSysPassword;
+  Secrets[3] := TargetSchemaPassword;
+  Result := TMigratorLogger.MaskSecrets(LineText, Secrets);
+end;
+
+procedure TMainForm.FormCreate(Sender: TObject);
+begin
+  FInitializing := True;
+  try
+    FSettings := TMigratorSettingsService.Load;
+    FServerSourceStatus := csDisconnected;
+    FServerTargetStatus := csDisconnected;
+    FSourceAgentStatus := csDisconnected;
+    FTargetAgentStatus := csDisconnected;
+    FSourceTablespacesRaw := '';
+    FTargetTablespacesRaw := '';
+    FModeLocked := False;
+    FSelectedMode := mmNone;
+    FAgentKind := akUnknown;
+    FAgentDisconnecting := False;
+    FMigrationThread := nil;
+    FMigrationRunningFlag := 0;
+    FAgentIncomingFileStream := nil;
+    FAgentIncomingFilePath := '';
+    FAgentOutgoingFileStream := nil;
+    FAgentOutgoingFilePath := '';
+    FAgentOutgoingFileSize := 0;
+    FAgentOutgoingFileSha256 := '';
+    FMaskSourceSysPassword := '';
+    FMaskSourceSchemaPassword := '';
+    FMaskTargetSysPassword := '';
+    FMaskTargetSchemaPassword := '';
+
+    FContextLock := TCriticalSection.Create;
+    FSendLock := TCriticalSection.Create;
+    FRpcLock := TCriticalSection.Create;
+    FRpcEvent := TEvent.Create(nil, True, False, '');
+    ConfigureServer;
+
+    FLogger := TMigratorLogger.Create;
+    FLogger.OnLog :=
+      procedure(const Line: string)
+      var
+        Payload: TLogLinePayload;
+      begin
+        Payload := TLogLinePayload.Create;
+        Payload.Line := Line;
+        PostUiMessage(WM_APP_LOG_LINE, Payload);
+      end;
+
+    ApplySettingsToUI;
+    btnShowLog.Visible := False;
+    ResetAgentSchemaState(True);
+    ResetAgentSchemaState(False);
+    edtSourceTablespace.Style := csDropDownList;
+    edtTargetTablespace.Style := csDropDownList;
+    UpdateServerConnectionLabels;
+    UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+    UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+    UpdateAgentConnectButtons;
+    UpdateAgentConnectionControls;
+
+    edtSourcePDB.OnExit := SourceDbParamsChanged;
+    edtSourceSYS.OnExit := SourceDbParamsChanged;
+    edtSourceSYSPassword.OnExit := SourceDbParamsChanged;
+    edtTargetPDB.OnExit := TargetDbParamsChanged;
+    edtTargetSYS.OnExit := TargetDbParamsChanged;
+    edtTargetSYSPassword.OnExit := TargetDbParamsChanged;
+
+    if sbMain.Panels.Count > 1 then
+      sbMain.Panels[1].Text := FOOTER_TEXT;
+    AdjustStatusBarPanels;
+    UpdateModeUI;
+  finally
+    FInitializing := False;
+  end;
+end;
+
+procedure TMainForm.FormDestroy(Sender: TObject);
+begin
+  if Assigned(FMigrationThread) then
+  begin
+    FMigrationThread.WaitFor;
+    FreeAndNil(FMigrationThread);
+  end;
+  AgentCloseIncomingFile;
+  AgentCloseOutgoingFile;
+  DisconnectAgentConnection(False);
+  StopServer;
+
+  if Assigned(FLogger) then
+    FLogger.OnLog := nil;
+
+  FLogForm := nil;
+  FLogger.Free;
+  FServerTcp.Free;
+  FRpcEvent.Free;
+  FRpcLock.Free;
+  FSendLock.Free;
+  FContextLock.Free;
+end;
+
+procedure TMainForm.PostUiMessage(const MsgId: Cardinal; Payload: TObject);
+begin
+  if not Assigned(Payload) then
+    Exit;
+  if not HandleAllocated then
+  begin
+    Payload.Free;
+    Exit;
+  end;
+  if not PostMessage(Handle, MsgId, WPARAM(Payload), 0) then
+    Payload.Free;
+end;
+
+procedure TMainForm.WMLogLine(var Msg: TMessage);
+var
+  Payload: TLogLinePayload;
+begin
+  Payload := TLogLinePayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleLoggerLine(Payload.Line);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMOrchestratorProgress(var Msg: TMessage);
+var
+  Payload: TOrchestratorProgressPayload;
+begin
+  Payload := TOrchestratorProgressPayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleOrchestratorProgress(Payload.Stage, Payload.Percent, Payload.MessageText);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMOrchestratorCompleted(var Msg: TMessage);
+var
+  Payload: TOrchestratorCompletedPayload;
+begin
+  Payload := TOrchestratorCompletedPayload(Pointer(Msg.WParam));
+  try
+    if Assigned(Payload) then
+      HandleOrchestratorCompleted(Payload.ResultState, Payload.Summary);
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMServerHello(var Msg: TMessage);
+var
+  Payload: TServerHelloPayload;
+begin
+  Payload := TServerHelloPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.Kind = akSource then
+    begin
+      FServerSourceStatus := csConnected;
+    end
+    else if Payload.Kind = akTarget then
+    begin
+      FServerTargetStatus := csConnected;
+    end;
+
+    UpdateServerConnectionLabels;
+    UpdateModeStatusBar;
+
+    if Payload.Kind = akSource then
+      RequestSchemaList(True)
+    else if Payload.Kind = akTarget then
+      RequestSchemaList(False);
+
+    if Assigned(FLogger) then
+      FLogger.AddInfo(msIdle, Format('%s agent connected to server',
+        [AgentKindToString(Payload.Kind)]));
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMSchemaResponse(var Msg: TMessage);
+var
+  Payload: TSchemaResponsePayload;
+  I: Integer;
+  Combo: TComboBox;
+  CurrentPdb: string;
+begin
+  Payload := TSchemaResponsePayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.IsSource then
+      Combo := cbSourceSchema
+    else
+      Combo := cbTargetSchema;
+
+    if Payload.IsSource then
+      CurrentPdb := Trim(edtSourcePDB.Text)
+    else
+      CurrentPdb := Trim(edtTargetPDB.Text);
+    if (Trim(Payload.RequestedPDB) <> '') and
+       (not SameText(CurrentPdb, Trim(Payload.RequestedPDB))) then
+      Exit;
+
+    Combo.Items.BeginUpdate;
+    try
+      Combo.Items.Clear;
+      if Payload.OkValue then
+      begin
+        for I := 0 to High(Payload.Schemas) do
+          Combo.Items.Add(Payload.Schemas[I]);
+      end;
+    finally
+      Combo.Items.EndUpdate;
+    end;
+
+    Combo.Enabled := Payload.OkValue and (Combo.Items.Count > 0);
+    if Combo.Enabled then
+    begin
+      Combo.ItemIndex := 0;
+      if Payload.IsSource then
+        cbSourceSchemaChange(Combo)
+      else
+        cbTargetSchemaChange(Combo);
+    end;
+    if not Combo.Enabled then
+    begin
+      if Payload.IsSource then
+      begin
+        edtSourceTablespace.Items.Clear;
+        edtSourceTablespace.Text := '';
+        FSourceTablespacesRaw := '';
+      end
+      else
+      begin
+        edtTargetTablespace.Items.Clear;
+        edtTargetTablespace.Text := '';
+        FTargetTablespacesRaw := '';
+      end;
+    end;
+
+    if Assigned(FLogger) then
+    begin
+      if not Payload.OkValue then
+      begin
+        if Payload.IsSource then
+          SetMainStatus('Source schema list error: ' + Payload.ErrorText)
+        else
+          SetMainStatus('Target schema list error: ' + Payload.ErrorText);
+        FLogger.AddError(msPrecheck, Payload.ErrorText)
+      end
+      else if Combo.Items.Count > 0 then
+      begin
+        if Payload.IsSource then
+          FLogger.AddInfo(msPrecheck, Format('Source schemas loaded: %d', [Combo.Items.Count]))
+        else
+          FLogger.AddInfo(msPrecheck, Format('Target schemas loaded: %d', [Combo.Items.Count]));
+        if Payload.IsSource then
+          SetMainStatus(Format('Source connected. Schemas loaded: %d', [Combo.Items.Count]))
+        else
+          SetMainStatus(Format('Target connected. Schemas loaded: %d', [Combo.Items.Count]));
+      end
+      else if Combo.Items.Count = 0 then
+      begin
+        FLogger.AddWarning(msPrecheck, 'No schemas returned by agent');
+        if Payload.IsSource then
+          SetMainStatus('Source connected, but no schemas returned')
+        else
+          SetMainStatus('Target connected, but no schemas returned');
+      end;
+    end;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMTablespaceResponse(var Msg: TMessage);
+var
+  Payload: TTablespaceResponsePayload;
+  CurrentSchema: string;
+  TablespaceCombo: TComboBox;
+  I: Integer;
+  SelectedIndex: Integer;
+begin
+  Payload := TTablespaceResponsePayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.IsSource then
+    begin
+      TablespaceCombo := edtSourceTablespace;
+      CurrentSchema := Trim(cbSourceSchema.Text);
+      if (Trim(Payload.RequestedSchema) <> '') and
+         (not SameText(CurrentSchema, Trim(Payload.RequestedSchema))) then
+        Exit;
+      if Payload.OkValue then
+      begin
+        TablespaceCombo.Enabled := True;
+        TablespaceCombo.Items.BeginUpdate;
+        try
+          TablespaceCombo.Items.Clear;
+          for I := 0 to High(Payload.AllTablespaces) do
+            TablespaceCombo.Items.Add(Payload.AllTablespaces[I]);
+        finally
+          TablespaceCombo.Items.EndUpdate;
+        end;
+        SelectedIndex := TablespaceCombo.Items.IndexOf(Payload.PrimaryTS);
+        if (SelectedIndex < 0) and (TablespaceCombo.Items.Count > 0) then
+          SelectedIndex := 0;
+        TablespaceCombo.ItemIndex := SelectedIndex;
+        FSourceTablespacesRaw := Payload.AllJoined;
+        SetMainStatus('Source tablespace resolved: ' + Payload.PrimaryTS);
+        if Assigned(FLogger) then
+          FLogger.AddInfo(msPrecheck, 'Source tablespace resolved: ' + Payload.PrimaryTS);
+        if Payload.HasMultipleTablespaces and Assigned(FLogger) then
+          FLogger.AddWarning(msPrecheck,
+            'Multiple tablespaces detected on Source. Auto-mapping will be used.');
+      end
+      else
+      begin
+        TablespaceCombo.Enabled := False;
+        TablespaceCombo.Items.Clear;
+        TablespaceCombo.Text := '';
+        FSourceTablespacesRaw := '';
+        SetMainStatus('Source tablespace resolve failed: ' + Payload.ErrorText);
+        if Assigned(FLogger) then
+          FLogger.AddError(msPrecheck, Payload.ErrorText);
+      end;
+    end
+    else
+    begin
+      TablespaceCombo := edtTargetTablespace;
+      CurrentSchema := Trim(cbTargetSchema.Text);
+      if (Trim(Payload.RequestedSchema) <> '') and
+         (not SameText(CurrentSchema, Trim(Payload.RequestedSchema))) then
+        Exit;
+      if Payload.OkValue then
+      begin
+        TablespaceCombo.Enabled := True;
+        TablespaceCombo.Items.BeginUpdate;
+        try
+          TablespaceCombo.Items.Clear;
+          for I := 0 to High(Payload.AllTablespaces) do
+            TablespaceCombo.Items.Add(Payload.AllTablespaces[I]);
+        finally
+          TablespaceCombo.Items.EndUpdate;
+        end;
+        SelectedIndex := TablespaceCombo.Items.IndexOf(Payload.PrimaryTS);
+        if (SelectedIndex < 0) and (TablespaceCombo.Items.Count > 0) then
+          SelectedIndex := 0;
+        TablespaceCombo.ItemIndex := SelectedIndex;
+        FTargetTablespacesRaw := Payload.AllJoined;
+        SetMainStatus('Target tablespace resolved: ' + Payload.PrimaryTS);
+        if Assigned(FLogger) then
+          FLogger.AddInfo(msPrecheck, 'Target tablespace resolved: ' + Payload.PrimaryTS);
+      end
+      else
+      begin
+        TablespaceCombo.Enabled := False;
+        TablespaceCombo.Items.Clear;
+        TablespaceCombo.Text := '';
+        FTargetTablespacesRaw := '';
+        SetMainStatus('Target tablespace resolve failed: ' + Payload.ErrorText);
+        if Assigned(FLogger) then
+          FLogger.AddError(msPrecheck, Payload.ErrorText);
+      end;
+    end;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMServerDisconnect(var Msg: TMessage);
+var
+  Payload: TServerDisconnectPayload;
+begin
+  Payload := TServerDisconnectPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+
+    if Payload.WasSource then
+    begin
+      FServerSourceStatus := csDisconnected;
+      ResetAgentSchemaState(True);
+    end;
+    if Payload.WasTarget then
+    begin
+      FServerTargetStatus := csDisconnected;
+      ResetAgentSchemaState(False);
+    end;
+    UpdateServerConnectionLabels;
+    UpdateModeStatusBar;
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.WMAgentDisconnect(var Msg: TMessage);
+var
+  Payload: TAgentDisconnectPayload;
+begin
+  Payload := TAgentDisconnectPayload(Pointer(Msg.WParam));
+  try
+    if not Assigned(Payload) then
+      Exit;
+    if FAgentDisconnecting then
+      Exit;
+
+    if Payload.Kind = akSource then
+    begin
+      FSourceAgentStatus := csDisconnected;
+      UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+    end
+    else if Payload.Kind = akTarget then
+    begin
+      FTargetAgentStatus := csDisconnected;
+      UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+    end;
+    UpdateModeStatusBar;
+    if Assigned(FLogger) then
+      FLogger.AddWarning(msIdle, 'Agent connection closed');
+  finally
+    Payload.Free;
+  end;
+  Msg.Result := 0;
+end;
+
+procedure TMainForm.FormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  if IsDistributedMigrationRunning then
+  begin
+    MessageDlg('Migration is still running. Wait until completion before closing.',
+      mtWarning, [mbOK], 0);
+    Action := caNone;
+    Exit;
+  end;
+  SaveSettingsFromUI;
+end;
+
+procedure TMainForm.FormResize(Sender: TObject);
+begin
+  AdjustStatusBarPanels;
+end;
+
+procedure TMainForm.SetMainStatus(const Text: string);
+begin
+  if sbMain.Panels.Count > 0 then
+    sbMain.Panels[0].Text := Text
+  else
+    sbMain.SimpleText := Text;
+end;
+
+procedure TMainForm.AdjustStatusBarPanels;
+var
+  LeftWidth: Integer;
+  FooterWidth: Integer;
+begin
+  if sbMain.Panels.Count < 2 then
+    Exit;
+
+  FooterWidth := FOOTER_PANEL_MIN_WIDTH;
+  if FooterWidth > sbMain.ClientWidth div 2 then
+    FooterWidth := sbMain.ClientWidth div 2;
+  if FooterWidth < 180 then
+    FooterWidth := 180;
+
+  LeftWidth := sbMain.ClientWidth - FooterWidth;
+  if LeftWidth < 220 then
+    LeftWidth := 220;
+
+  sbMain.Panels[0].Width := LeftWidth;
+  sbMain.Panels[1].Width := FooterWidth;
+end;
+
+procedure TMainForm.ApplySettingsToUI;
+begin
+  edtServerPort.Text := IntToStr(FSettings.ServerPort);
+  edtSourcePDB.Text := 'ORCLPDB';
+  edtTargetPDB.Text := 'ORCLPDB';
+  edtSourceSYS.Text := 'sys';
+  edtTargetSYS.Text := 'sys';
+  edtSourceAgentPort.Text := IntToStr(FSettings.SourceAgentPort);
+  edtTargetAgentPort.Text := IntToStr(FSettings.TargetAgentPort);
+  edtSourceServerIP.Text := FSettings.SourceServerIP;
+  edtTargetServerIP.Text := FSettings.TargetServerIP;
+  edtSourceAgentPassword.Text := FSettings.SourceAgentPassword;
+  edtTargetAgentPassword.Text := FSettings.TargetAgentPassword;
+
+  case FSettings.LastMode of
+    mmSource: pcMode.ActivePage := tsSource;
+    mmTarget: pcMode.ActivePage := tsTarget;
+  else
+    pcMode.ActivePage := tsServer;
+  end;
+end;
+
+procedure TMainForm.SaveSettingsFromUI;
+begin
+  FSettings.LastMode := ActiveMode;
+  if FModeLocked and (FSelectedMode <> mmNone) then
+    FSettings.LastMode := FSelectedMode;
+  FSettings.ServerPort := StrToIntDef(Trim(edtServerPort.Text), 5050);
+  FSettings.SourceServerIP := Trim(edtSourceServerIP.Text);
+  if FSettings.SourceServerIP = '' then
+    FSettings.SourceServerIP := '127.0.0.1';
+  FSettings.SourceAgentPort := StrToIntDef(Trim(edtSourceAgentPort.Text), FSettings.ServerPort);
+  if FSettings.SourceAgentPort <= 0 then
+    FSettings.SourceAgentPort := FSettings.ServerPort;
+  FSettings.SourceAgentPassword := edtSourceAgentPassword.Text;
+
+  FSettings.TargetServerIP := Trim(edtTargetServerIP.Text);
+  if FSettings.TargetServerIP = '' then
+    FSettings.TargetServerIP := '127.0.0.1';
+  FSettings.TargetAgentPort := StrToIntDef(Trim(edtTargetAgentPort.Text), FSettings.ServerPort);
+  if FSettings.TargetAgentPort <= 0 then
+    FSettings.TargetAgentPort := FSettings.ServerPort;
+  FSettings.TargetAgentPassword := edtTargetAgentPassword.Text;
+
+  TMigratorSettingsService.Save(FSettings);
+end;
+
+function TMainForm.ActiveMode: TMigratorMode;
+begin
+  if pcMode.ActivePage = tsServer then
+    Exit(mmServer);
+  if pcMode.ActivePage = tsSource then
+    Exit(mmSource);
+  if pcMode.ActivePage = tsTarget then
+    Exit(mmTarget);
+  Result := mmNone;
+end;
+
+procedure TMainForm.LockModeIfNeeded;
+begin
+  if FModeLocked then
+    Exit;
+
+  FSelectedMode := ActiveMode;
+  FModeLocked := FSelectedMode <> mmNone;
+  if not FModeLocked then
+    Exit;
+
+  tsServer.TabVisible := FSelectedMode = mmServer;
+  tsSource.TabVisible := FSelectedMode = mmSource;
+  tsTarget.TabVisible := FSelectedMode = mmTarget;
+  UpdateModeUI;
+  FLogger.AddInfo(msIdle, 'Mode locked: ' + ModeToString(FSelectedMode));
+end;
+
+procedure TMainForm.UpdateModeUI;
+begin
+  if FModeLocked then
+    Caption := 'Kapps Schema Migrator [' + ModeToString(FSelectedMode) + ']'
+  else
+    Caption := 'Kapps Schema Migrator';
+  UpdateModeStatusBar;
+end;
+
+procedure TMainForm.UpdateModeStatusBar;
+begin
+  UpdateAgentConnectButtons;
+  UpdateAgentConnectionControls;
+
+  if not FModeLocked then
+  begin
+    SetMainStatus('Mode is not locked yet');
+    UpdateMigrateButtonState;
+    Exit;
+  end;
+
+  case FSelectedMode of
+    mmServer:
+      begin
+        if chkServerActive.Checked then
+          SetMainStatus(Format('Mode: %s | Listening: %s | Source: %s | Target: %s',
+            [ModeToString(FSelectedMode), Trim(edtServerPort.Text),
+            ConnectionStatusToString(FServerSourceStatus),
+            ConnectionStatusToString(FServerTargetStatus)]))
+        else
+          SetMainStatus(Format('Mode: %s | Source: %s | Target: %s',
+            [ModeToString(FSelectedMode), ConnectionStatusToString(FServerSourceStatus),
+            ConnectionStatusToString(FServerTargetStatus)]));
+      end;
+    mmSource:
+      SetMainStatus(Format('Mode: %s | Agent: %s',
+        [ModeToString(FSelectedMode), ConnectionStatusToString(FSourceAgentStatus)]));
+    mmTarget:
+      SetMainStatus(Format('Mode: %s | Agent: %s',
+        [ModeToString(FSelectedMode), ConnectionStatusToString(FTargetAgentStatus)]));
+  else
+    SetMainStatus('Mode is not locked yet');
+  end;
+  UpdateMigrateButtonState;
+end;
+
+procedure TMainForm.UpdateMigrateButtonState;
+begin
+  if not Assigned(btnMigrate) then
+    Exit;
+  if IsDistributedMigrationRunning then
+  begin
+    btnMigrate.Enabled := False;
+    Exit;
+  end;
+  btnMigrate.Enabled := (FModeLocked and (FSelectedMode = mmServer)) and
+    chkServerActive.Checked and
+    (FServerSourceStatus = csConnected) and
+    (FServerTargetStatus = csConnected);
+end;
+
+procedure TMainForm.UpdateServerConnectionLabels;
+begin
+  UpdateAgentStatusLabel(FServerSourceStatus, lblSourceStateValue);
+  UpdateAgentStatusLabel(FServerTargetStatus, lblTargetStateValue);
+end;
+
+procedure TMainForm.UpdateAgentStatusLabel(const AStatus: TConnectionStatus; ALabel: TLabel);
+begin
+  ALabel.Caption := ConnectionStatusToString(AStatus);
+  case AStatus of
+    csConnected: ALabel.Font.Color := clGreen;
+    csDisconnected: ALabel.Font.Color := clRed;
+    csAuthFailed: ALabel.Font.Color := clPurple;
+    csConnectionFailed: ALabel.Font.Color := clMaroon;
+  end;
+end;
+
+procedure TMainForm.UpdateAgentConnectButtons;
+begin
+  if Assigned(btnSourceConnect) then
+  begin
+    if FSourceAgentStatus = csConnected then
+      btnSourceConnect.Caption := 'Disconnect'
+    else
+      btnSourceConnect.Caption := 'Connect';
+  end;
+
+  if Assigned(btnTargetConnect) then
+  begin
+    if FTargetAgentStatus = csConnected then
+      btnTargetConnect.Caption := 'Disconnect'
+    else
+      btnTargetConnect.Caption := 'Connect';
+  end;
+end;
+
+procedure TMainForm.UpdateAgentConnectionControls;
+begin
+  edtSourceServerIP.Enabled := FSourceAgentStatus <> csConnected;
+  edtSourceAgentPort.Enabled := FSourceAgentStatus <> csConnected;
+  edtSourceAgentPassword.Enabled := FSourceAgentStatus <> csConnected;
+
+  edtTargetServerIP.Enabled := FTargetAgentStatus <> csConnected;
+  edtTargetAgentPort.Enabled := FTargetAgentStatus <> csConnected;
+  edtTargetAgentPassword.Enabled := FTargetAgentStatus <> csConnected;
+end;
+
+procedure TMainForm.EnsureLogForm;
+begin
+  if Assigned(FLogForm) then
+    Exit;
+  FLogForm := TLogForm.Create(Self);
+  FLogForm.OnClose := LogFormClose;
+  FLogForm.SetLines(FLogger.Snapshot);
+end;
+
+procedure TMainForm.HandleLoggerLine(const Line: string);
+begin
+  if Assigned(FLogForm) then
+    FLogForm.AppendLine(Line);
+end;
+
+procedure TMainForm.HandleOrchestratorProgress(const Stage: TMigrationStage;
+  const Percent: Integer; const MessageText: string);
+begin
+  pbMigration.Position := Percent;
+  lblProgressHint.Caption := MessageText;
+  SetMainStatus(Format('%s: %s', [StageToString(Stage), MessageText]));
+end;
+
+procedure TMainForm.HandleOrchestratorCompleted(const AResult: TMigrationResult;
+  const Summary: string);
+begin
+  UpdateMigrateButtonState;
+  SetMainStatus(ResultToString(AResult) + ': ' + Summary);
+end;
+
+function TMainForm.BuildMigrationRequest(out Request: TMigrationRequest;
+  out ErrorText: string): Boolean;
+var
+  NewGuid: TGUID;
+begin
+  Result := False;
+  ErrorText := '';
+  Request := Default(TMigrationRequest);
+
+  if (Trim(edtSourceTablespace.Text) = '') and (edtSourceTablespace.Items.Count > 0) then
+    edtSourceTablespace.ItemIndex := 0;
+  if (Trim(edtTargetTablespace.Text) = '') and (edtTargetTablespace.Items.Count > 0) then
+    edtTargetTablespace.ItemIndex := 0;
+
+  if not chkServerActive.Checked then
+  begin
+    ErrorText := 'Server is not active';
+    Exit;
+  end;
+
+  if (FServerSourceStatus <> csConnected) or (FServerTargetStatus <> csConnected) then
+  begin
+    ErrorText := 'Source and Target must be connected';
+    Exit;
+  end;
+
+  if Trim(cbSourceSchema.Text) = '' then
+  begin
+    ErrorText := 'Source schema is not selected';
+    Exit;
+  end;
+
+  if Trim(cbTargetSchema.Text) = '' then
+  begin
+    ErrorText := 'Target schema is not selected';
+    Exit;
+  end;
+
+  if Trim(edtTargetTablespace.Text) = '' then
+  begin
+    ErrorText := 'Target tablespace is empty';
+    Exit;
+  end;
+
+  if (Trim(FSourceTablespacesRaw) = '') and (Trim(edtSourceTablespace.Text) = '') then
+  begin
+    ErrorText := 'Source tablespace is empty';
+    Exit;
+  end;
+
+  if Trim(edtSourceSchemaPassword.Text) = '' then
+  begin
+    ErrorText := 'Source schema password is empty';
+    Exit;
+  end;
+
+  if Trim(edtTargetSchemaPassword.Text) = '' then
+  begin
+    ErrorText := 'Target schema password is empty';
+    Exit;
+  end;
+
+  if Trim(edtSourceSYSPassword.Text) = '' then
+  begin
+    ErrorText := 'Source SYS password is empty';
+    Exit;
+  end;
+
+  if Trim(edtTargetSYSPassword.Text) = '' then
+  begin
+    ErrorText := 'Target SYS password is empty';
+    Exit;
+  end;
+
+  if Trim(FSettings.AgentDpumpRoot) = '' then
+  begin
+    ErrorText := 'Agent dpump root is empty in settings.ini';
+    Exit;
+  end;
+
+  if Trim(FSettings.ServerCacheRoot) = '' then
+  begin
+    ErrorText := 'Server cache root is empty in settings.ini';
+    Exit;
+  end;
+
+  CreateGUID(NewGuid);
+  Request.JobId := LowerCase(GuidToString(NewGuid));
+  Request.JobId := StringReplace(Request.JobId, '{', '', [rfReplaceAll]);
+  Request.JobId := StringReplace(Request.JobId, '}', '', [rfReplaceAll]);
+  Request.JobId := StringReplace(Request.JobId, '-', '', [rfReplaceAll]);
+  Request.AgentDpumpRoot := FSettings.AgentDpumpRoot;
+  Request.ServerCacheRoot := FSettings.ServerCacheRoot;
+  Request.CleanBeforeImport := chkCleanBeforeImport.Checked;
+
+  Request.Source.Host := '127.0.0.1';
+  Request.Source.Port := 1521;
+  Request.Source.PDB := Trim(edtSourcePDB.Text);
+  Request.Source.SysUser := Trim(edtSourceSYS.Text);
+  Request.Source.SysPassword := edtSourceSYSPassword.Text;
+  Request.Source.Schema := Trim(cbSourceSchema.Text);
+  Request.Source.SchemaPassword := edtSourceSchemaPassword.Text;
+  if FSourceTablespacesRaw <> '' then
+    Request.Source.Tablespace := FSourceTablespacesRaw
+  else
+    Request.Source.Tablespace := Trim(edtSourceTablespace.Text);
+
+  Request.Target.Host := '127.0.0.1';
+  Request.Target.Port := 1521;
+  Request.Target.PDB := Trim(edtTargetPDB.Text);
+  Request.Target.SysUser := Trim(edtTargetSYS.Text);
+  Request.Target.SysPassword := edtTargetSYSPassword.Text;
+  Request.Target.Schema := Trim(cbTargetSchema.Text);
+  Request.Target.SchemaPassword := edtTargetSchemaPassword.Text;
+  Request.Target.Tablespace := Trim(edtTargetTablespace.Text);
+
+  Result := True;
+end;
+
+procedure TMainForm.ResetAgentSchemaState(const IsSource: Boolean);
+begin
+  if IsSource then
+  begin
+    cbSourceSchema.Items.Clear;
+    cbSourceSchema.Text := '';
+    cbSourceSchema.Enabled := False;
+    edtSourceTablespace.Items.Clear;
+    edtSourceTablespace.Text := '';
+    edtSourceTablespace.Enabled := False;
+    FSourceTablespacesRaw := '';
+  end
+  else
+  begin
+    cbTargetSchema.Items.Clear;
+    cbTargetSchema.Text := '';
+    cbTargetSchema.Enabled := False;
+    edtTargetTablespace.Items.Clear;
+    edtTargetTablespace.Text := '';
+    edtTargetTablespace.Enabled := False;
+    FTargetTablespacesRaw := '';
+  end;
+end;
+
+procedure TMainForm.SourceDbParamsChanged(Sender: TObject);
+begin
+  if not chkServerActive.Checked then
+    Exit;
+  if FServerSourceStatus <> csConnected then
+    Exit;
+  ResetAgentSchemaState(True);
+  RequestSchemaList(True);
+end;
+
+procedure TMainForm.TargetDbParamsChanged(Sender: TObject);
+begin
+  if not chkServerActive.Checked then
+    Exit;
+  if FServerTargetStatus <> csConnected then
+    Exit;
+  ResetAgentSchemaState(False);
+  RequestSchemaList(False);
+end;
+
+procedure TMainForm.ConfigureServer;
+begin
+  FServerTcp := TIdTCPServer.Create(Self);
+  FServerTcp.DefaultPort := 5050;
+  FServerTcp.OnConnect := ServerConnect;
+  FServerTcp.OnDisconnect := ServerDisconnect;
+  FServerTcp.OnExecute := ServerExecute;
+end;
+
+procedure TMainForm.StartServer;
+var
+  Port: Integer;
+begin
+  Port := StrToIntDef(Trim(edtServerPort.Text), 0);
+  if Port <= 0 then
+    raise Exception.Create('Server port is invalid');
+
+  if FServerTcp.Active then
+    FServerTcp.Active := False;
+
+  FServerPassword := edtServerPassword.Text;
+  FServerTcp.DefaultPort := Port;
+  FServerTcp.Active := True;
+
+  FServerSourceStatus := csDisconnected;
+  FServerTargetStatus := csDisconnected;
+  UpdateServerConnectionLabels;
+  ResetAgentSchemaState(True);
+  ResetAgentSchemaState(False);
+  SetMainStatus(Format('Listening on port %d | Source: Disconnected | Target: Disconnected', [Port]));
+  FLogger.AddInfo(msIdle, Format('Server listener started on port %d', [Port]));
+  UpdateModeStatusBar;
+end;
+
+procedure TMainForm.StopServer;
+begin
+  if Assigned(FServerTcp) and FServerTcp.Active then
+  begin
+    try
+      FServerTcp.Active := False;
+    except
+      on E: Exception do
+        FLogger.AddWarning(msIdle, 'Error while stopping server listener: ' + E.Message);
+    end;
+  end;
+
+  FContextLock.Acquire;
+  try
+    FSourceContext := nil;
+    FTargetContext := nil;
+  finally
+    FContextLock.Release;
+  end;
+
+  FServerSourceStatus := csDisconnected;
+  FServerTargetStatus := csDisconnected;
+  UpdateServerConnectionLabels;
+  ResetAgentSchemaState(True);
+  ResetAgentSchemaState(False);
+  SetMainStatus('Disconnected');
+  UpdateModeStatusBar;
+end;
+
+procedure TMainForm.ServerConnect(AContext: TIdContext);
+var
+  PeerText: string;
+begin
+  if Assigned(AContext.Connection) and Assigned(AContext.Connection.IOHandler) then
+  begin
+    AContext.Connection.IOHandler.MaxLineAction := maException;
+    AContext.Connection.IOHandler.MaxLineLength := 16 * 1024 * 1024;
+    try
+      AContext.Connection.Socket.UseNagle := False;
+    except
+    end;
+  end;
+  AContext.Data := TPeerState.Create;
+  PeerText := '';
+  try
+    PeerText := AContext.Connection.Socket.Binding.PeerIP + ':' +
+      IntToStr(AContext.Connection.Socket.Binding.PeerPort);
+  except
+  end;
+  if Assigned(FLogger) then
+  begin
+    if PeerText <> '' then
+      FLogger.AddInfo(msIdle, 'Incoming TCP connection accepted from ' + PeerText)
+    else
+      FLogger.AddInfo(msIdle, 'Incoming TCP connection accepted');
+  end;
+end;
+
+procedure TMainForm.ServerDisconnect(AContext: TIdContext);
+var
+  Peer: TObject;
+  PeerText: string;
+begin
+  PeerText := '';
+  try
+    PeerText := AContext.Connection.Socket.Binding.PeerIP + ':' +
+      IntToStr(AContext.Connection.Socket.Binding.PeerPort);
+  except
+  end;
+
+  ClearServerAgentContext(AContext);
+
+  Peer := AContext.Data;
+  AContext.Data := nil;
+  Peer.Free;
+  if Assigned(FLogger) then
+  begin
+    if PeerText <> '' then
+      FLogger.AddInfo(msIdle, 'TCP client disconnected: ' + PeerText)
+    else
+      FLogger.AddInfo(msIdle, 'TCP client disconnected');
+  end;
+end;
+
+procedure TMainForm.ServerExecute(AContext: TIdContext);
+var
+  MessageLine: string;
+  JsonValue: TJSONValue;
+  MessageObj: TJSONObject;
+  Peer: TPeerState;
+begin
+  try
+    MessageLine := AContext.Connection.IOHandler.ReadLn;
+  except
+    on E: Exception do
+    begin
+      if Assigned(FLogger) then
+        FLogger.AddWarning(msIdle, 'Server read error: ' + E.Message);
+      Exit;
+    end;
+  end;
+
+  if Trim(MessageLine) = '' then
+    Exit;
+
+  JsonValue := TJSONObject.ParseJSONValue(MessageLine);
+  if not (JsonValue is TJSONObject) then
+  begin
+    FLogger.AddWarning(msIdle, 'Server received non-JSON message');
+    JsonValue.Free;
+    Exit;
+  end;
+
+  MessageObj := TJSONObject(JsonValue);
+  try
+    Peer := TPeerState(AContext.Data);
+    HandleServerMessage(AContext, Peer, MessageObj);
+  finally
+    MessageObj.Free;
+  end;
+end;
+
+procedure TMainForm.HandleServerMessage(AContext: TIdContext; Peer: TPeerState;
+  MessageObj: TJSONObject);
+var
+  MessageType: string;
+  ProgressLine: string;
+begin
+  MessageType := JsonGetString(MessageObj, 'type', '');
+  if MessageType = '' then
+    Exit;
+
+  if SameText(MessageType, MSG_HELLO) then
+  begin
+    HandleServerHello(AContext, Peer, MessageObj);
+    Exit;
+  end;
+
+  if not Assigned(Peer) or not Peer.Authenticated then
+    Exit;
+
+  if TryCapturePendingResponse(Peer, MessageObj) then
+    Exit;
+
+  if SameText(MessageType, MSG_LIST_SCHEMAS_RESPONSE) then
+  begin
+    HandleServerListSchemasResponse(Peer, MessageObj);
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_GET_TABLESPACES_RESPONSE) then
+  begin
+    HandleServerTablespacesResponse(Peer, MessageObj);
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_RUN_EXPORT_PROGRESS) then
+  begin
+    ProgressLine := JsonGetString(MessageObj, 'line', '');
+    if ProgressLine <> '' then
+      ProgressLine := MaskProgressLine(ProgressLine, FMaskSourceSysPassword,
+        FMaskSourceSchemaPassword, FMaskTargetSysPassword, FMaskTargetSchemaPassword);
+    if ProgressLine <> '' then
+      FLogger.AddInfo(msExport, ProgressLine);
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_RUN_IMPORT_PROGRESS) then
+  begin
+    ProgressLine := JsonGetString(MessageObj, 'line', '');
+    if ProgressLine <> '' then
+      ProgressLine := MaskProgressLine(ProgressLine, FMaskSourceSysPassword,
+        FMaskSourceSchemaPassword, FMaskTargetSysPassword, FMaskTargetSchemaPassword);
+    if ProgressLine <> '' then
+      FLogger.AddInfo(msImport, ProgressLine);
+    Exit;
+  end;
+
+  if Assigned(FLogger) then
+    FLogger.AddWarning(msIdle, 'Server received unsupported message type: ' + MessageType);
+end;
+function TMainForm.TryRegisterServerAgentContext(AContext: TIdContext; Kind: TAgentKind;
+  out ErrorText: string): Boolean;
+begin
+  Result := False;
+  ErrorText := '';
+
+  FContextLock.Acquire;
+  try
+    case Kind of
+      akSource:
+        begin
+          if Assigned(FSourceContext) and (FSourceContext <> AContext) then
+          begin
+            ErrorText := 'Source already connected';
+            Exit;
+          end;
+          FSourceContext := AContext;
+        end;
+      akTarget:
+        begin
+          if Assigned(FTargetContext) and (FTargetContext <> AContext) then
+          begin
+            ErrorText := 'Target already connected';
+            Exit;
+          end;
+          FTargetContext := AContext;
+        end;
+    else
+      ErrorText := 'Unknown agent type';
+      Exit;
+    end;
+  finally
+    FContextLock.Release;
+  end;
+
+  Result := True;
+end;
+
+procedure TMainForm.HandleServerHello(AContext: TIdContext; Peer: TPeerState;
+  MessageObj: TJSONObject);
+var
+  AgentTypeText: string;
+  PasswordText: string;
+  Kind: TAgentKind;
+  ErrorText: string;
+  ResponseObj: TJSONObject;
+  Payload: TServerHelloPayload;
+begin
+  if not Assigned(Peer) then
+    Exit;
+
+  AgentTypeText := JsonGetString(MessageObj, 'agentType', '');
+  PasswordText := JsonGetString(MessageObj, 'password', '');
+  Kind := ParseAgentKind(AgentTypeText);
+
+  if (FServerPassword <> '') and (PasswordText <> FServerPassword) then
+  begin
+    if Assigned(FLogger) then
+      FLogger.AddWarning(msIdle, 'Agent auth failed: wrong server password');
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+      ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('reason', 'Auth failed');
+      SendJsonToContext(AContext, ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    AContext.Connection.Disconnect;
+    Exit;
+  end;
+
+  if not TryRegisterServerAgentContext(AContext, Kind, ErrorText) then
+  begin
+    if Assigned(FLogger) then
+      FLogger.AddWarning(msIdle, 'Agent registration failed: ' + ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+      ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('reason', ErrorText);
+      SendJsonToContext(AContext, ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    AContext.Connection.Disconnect;
+    Exit;
+  end;
+
+  Peer.Authenticated := True;
+  Peer.AgentKind := Kind;
+  if Kind = akSource then
+    FServerSourceStatus := csConnected
+  else if Kind = akTarget then
+    FServerTargetStatus := csConnected;
+
+  if Assigned(FLogger) then
+    FLogger.AddInfo(msIdle, Format('Agent authenticated: %s', [AgentKindToString(Kind)]));
+
+  ResponseObj := TJSONObject.Create;
+  try
+    ResponseObj.AddPair('type', MSG_AUTH_RESULT);
+    ResponseObj.AddPair('ok', TJSONTrue.Create);
+    ResponseObj.AddPair('agentType', AgentKindToString(Kind));
+    SendJsonToContext(AContext, ResponseObj);
+  finally
+    ResponseObj.Free;
+  end;
+
+  Payload := TServerHelloPayload.Create;
+  Payload.Kind := Kind;
+  PostUiMessage(WM_APP_SERVER_HELLO, Payload);
+end;
+
+procedure TMainForm.HandleServerListSchemasResponse(Peer: TPeerState; MessageObj: TJSONObject);
+var
+  OkValue: Boolean;
+  ErrorText: string;
+  RequestedPdb: string;
+  Schemas: TArray<string>;
+  IsSource: Boolean;
+  Payload: TSchemaResponsePayload;
+begin
+  OkValue := JsonGetBoolean(MessageObj, 'ok', False);
+  ErrorText := JsonGetString(MessageObj, 'error', '');
+  RequestedPdb := JsonGetString(MessageObj, 'pdb', '');
+  Schemas := JsonArrayToStrings(JsonGetArray(MessageObj, 'schemas'));
+  IsSource := Peer.AgentKind = akSource;
+
+  Payload := TSchemaResponsePayload.Create;
+  Payload.IsSource := IsSource;
+  Payload.OkValue := OkValue;
+  Payload.ErrorText := ErrorText;
+  Payload.RequestedPDB := RequestedPdb;
+  Payload.Schemas := Schemas;
+  PostUiMessage(WM_APP_SCHEMA_RESPONSE, Payload);
+end;
+
+procedure TMainForm.HandleServerTablespacesResponse(Peer: TPeerState; MessageObj: TJSONObject);
+var
+  OkValue: Boolean;
+  ErrorText: string;
+  RequestedSchema: string;
+  PrimaryTS: string;
+  AllTS: TArray<string>;
+  AllJoined: string;
+  IsSource: Boolean;
+  Payload: TTablespaceResponsePayload;
+begin
+  OkValue := JsonGetBoolean(MessageObj, 'ok', False);
+  ErrorText := JsonGetString(MessageObj, 'error', '');
+  RequestedSchema := JsonGetString(MessageObj, 'schema', '');
+  PrimaryTS := JsonGetString(MessageObj, 'primaryTablespace', '');
+  AllTS := JsonArrayToStrings(JsonGetArray(MessageObj, 'tablespaces'));
+  AllJoined := JoinStringArray(AllTS);
+  IsSource := Peer.AgentKind = akSource;
+
+  Payload := TTablespaceResponsePayload.Create;
+  Payload.IsSource := IsSource;
+  Payload.OkValue := OkValue;
+  Payload.ErrorText := ErrorText;
+  Payload.RequestedSchema := RequestedSchema;
+  Payload.PrimaryTS := PrimaryTS;
+  Payload.AllTablespaces := AllTS;
+  Payload.AllJoined := AllJoined;
+  Payload.HasMultipleTablespaces := Length(AllTS) > 1;
+  PostUiMessage(WM_APP_TABLESPACE_RESPONSE, Payload);
+end;
+
+procedure TMainForm.ClearServerAgentContext(AContext: TIdContext);
+var
+  WasSource: Boolean;
+  WasTarget: Boolean;
+  DisconnectedKind: TAgentKind;
+  Payload: TServerDisconnectPayload;
+begin
+  WasSource := False;
+  WasTarget := False;
+  DisconnectedKind := akUnknown;
+
+  FContextLock.Acquire;
+  try
+    if FSourceContext = AContext then
+    begin
+      FSourceContext := nil;
+      WasSource := True;
+    end;
+
+    if FTargetContext = AContext then
+    begin
+      FTargetContext := nil;
+      WasTarget := True;
+    end;
+  finally
+    FContextLock.Release;
+  end;
+
+  if not (WasSource or WasTarget) then
+    Exit;
+
+  if WasSource then
+  begin
+    FServerSourceStatus := csDisconnected;
+    DisconnectedKind := akSource;
+  end;
+  if WasTarget then
+  begin
+    FServerTargetStatus := csDisconnected;
+    DisconnectedKind := akTarget;
+  end;
+
+  if DisconnectedKind <> akUnknown then
+  begin
+    FRpcLock.Acquire;
+    try
+      if (FRpcPendingRequestId <> '') and (FRpcPendingKind = DisconnectedKind) then
+      begin
+        FRpcResponseJson := Format(
+          '{"type":"%s","requestId":"%s","ok":false,"error":"%s disconnected"}',
+          [FRpcPendingExpectedType, FRpcPendingRequestId, AgentKindToString(DisconnectedKind)]);
+        FRpcEvent.SetEvent;
+      end;
+    finally
+      FRpcLock.Release;
+    end;
+  end;
+
+  Payload := TServerDisconnectPayload.Create;
+  Payload.WasSource := WasSource;
+  Payload.WasTarget := WasTarget;
+  PostUiMessage(WM_APP_SERVER_DISCONNECT, Payload);
+end;
+
+function TMainForm.GetAgentContext(const IsSource: Boolean): TIdContext;
+begin
+  FContextLock.Acquire;
+  try
+    if IsSource then
+      Result := FSourceContext
+    else
+      Result := FTargetContext;
+  finally
+    FContextLock.Release;
+  end;
+end;
+
+procedure TMainForm.SendJsonToContext(AContext: TIdContext; MessageObj: TJSONObject;
+  const RaiseOnError: Boolean);
+begin
+  if not Assigned(AContext) then
+    Exit;
+  if not Assigned(FSendLock) then
+  begin
+    if RaiseOnError then
+      raise Exception.Create('Send lock is not initialized');
+    Exit;
+  end;
+  try
+    FSendLock.Acquire;
+    try
+      AContext.Connection.IOHandler.WriteLn(MessageObj.ToJSON, IndyTextEncoding_UTF8);
+    finally
+      FSendLock.Release;
+    end;
+  except
+    on E: Exception do
+    begin
+      FLogger.AddWarning(msIdle, 'Failed to send message to agent: ' + E.Message);
+      if RaiseOnError then
+        raise;
+    end;
+  end;
+end;
+
+procedure TMainForm.RequestSchemaList(const IsSource: Boolean);
+var
+  Context: TIdContext;
+  RequestObj: TJSONObject;
+  PdbValue: string;
+  SysUserValue: string;
+  SysPasswordValue: string;
+begin
+  Context := GetAgentContext(IsSource);
+  if not Assigned(Context) then
+    Exit;
+
+  PdbValue := IfThen(IsSource, Trim(edtSourcePDB.Text), Trim(edtTargetPDB.Text));
+  SysUserValue := IfThen(IsSource, Trim(edtSourceSYS.Text), Trim(edtTargetSYS.Text));
+  SysPasswordValue := IfThen(IsSource, edtSourceSYSPassword.Text, edtTargetSYSPassword.Text);
+  if (PdbValue = '') or (SysUserValue = '') or (SysPasswordValue = '') then
+  begin
+    ResetAgentSchemaState(IsSource);
+    if IsSource then
+      SetMainStatus('Source connected. Fill Source PDB/SYS/SYS password to load schemas')
+    else
+      SetMainStatus('Target connected. Fill Target PDB/SYS/SYS password to load schemas');
+    if Assigned(FLogger) then
+    begin
+      if IsSource then
+        FLogger.AddWarning(msPrecheck,
+          'Source schemas were not requested: fill PDB/SYS/SYS password on Server tab')
+      else
+        FLogger.AddWarning(msPrecheck,
+          'Target schemas were not requested: fill PDB/SYS/SYS password on Server tab');
+    end;
+    Exit;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  try
+    RequestObj.AddPair('type', MSG_LIST_SCHEMAS_REQUEST);
+    RequestObj.AddPair('pdb', PdbValue);
+    RequestObj.AddPair('sysUser', SysUserValue);
+    RequestObj.AddPair('sysPassword', SysPasswordValue);
+    RequestObj.AddPair('dbHost', '127.0.0.1');
+    RequestObj.AddPair('dbPort', TJSONNumber.Create(1521));
+    SendJsonToContext(Context, RequestObj);
+  finally
+    RequestObj.Free;
+  end;
+
+  if Assigned(FLogger) then
+  begin
+    if IsSource then
+      FLogger.AddInfo(msPrecheck, 'Requested source schema list from agent')
+    else
+      FLogger.AddInfo(msPrecheck, 'Requested target schema list from agent');
+  end;
+end;
+
+procedure TMainForm.RequestTablespaceList(const IsSource: Boolean; const SchemaName: string);
+var
+  Context: TIdContext;
+  RequestObj: TJSONObject;
+  PdbValue: string;
+  SysUserValue: string;
+  SysPasswordValue: string;
+begin
+  Context := GetAgentContext(IsSource);
+  if not Assigned(Context) then
+    Exit;
+  if Trim(SchemaName) = '' then
+    Exit;
+
+  PdbValue := IfThen(IsSource, Trim(edtSourcePDB.Text), Trim(edtTargetPDB.Text));
+  SysUserValue := IfThen(IsSource, Trim(edtSourceSYS.Text), Trim(edtTargetSYS.Text));
+  SysPasswordValue := IfThen(IsSource, edtSourceSYSPassword.Text, edtTargetSYSPassword.Text);
+  if (PdbValue = '') or (SysUserValue = '') or (SysPasswordValue = '') then
+  begin
+    if IsSource then
+      SetMainStatus('Source schema selected. Fill Source SYS password to resolve tablespace')
+    else
+      SetMainStatus('Target schema selected. Fill Target SYS password to resolve tablespace');
+    Exit;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  try
+    RequestObj.AddPair('type', MSG_GET_TABLESPACES_REQUEST);
+    RequestObj.AddPair('schema', SchemaName);
+    RequestObj.AddPair('pdb', PdbValue);
+    RequestObj.AddPair('sysUser', SysUserValue);
+    RequestObj.AddPair('sysPassword', SysPasswordValue);
+    RequestObj.AddPair('dbHost', '127.0.0.1');
+    RequestObj.AddPair('dbPort', TJSONNumber.Create(1521));
+    SendJsonToContext(Context, RequestObj);
+  finally
+    RequestObj.Free;
+  end;
+end;
+
+procedure TMainForm.ConnectAgent(Kind: TAgentKind; const ServerIP, PortText, Password: string;
+  StatusLabel: TLabel; var StatusValue: TConnectionStatus);
+var
+  Port: Integer;
+  HelloObj: TJSONObject;
+  AuthLine: string;
+  JsonValue: TJSONValue;
+  AuthObj: TJSONObject;
+  AuthOk: Boolean;
+begin
+  Port := StrToIntDef(Trim(PortText), 0);
+  if (Trim(ServerIP) = '') or (Port <= 0) then
+  begin
+    StatusValue := csConnectionFailed;
+    UpdateAgentStatusLabel(StatusValue, StatusLabel);
+    UpdateModeStatusBar;
+    Exit;
+  end;
+
+  DisconnectAgentConnection(False);
+
+  FAgentClient := TIdTCPClient.Create(nil);
+  FAgentKind := Kind;
+  FAgentClient.Host := Trim(ServerIP);
+  FAgentClient.Port := Port;
+  FAgentClient.ConnectTimeout := 5000;
+  FAgentClient.ReadTimeout := -1;
+
+  try
+    FAgentClient.Connect;
+    if Assigned(FAgentClient.IOHandler) then
+    begin
+      FAgentClient.IOHandler.MaxLineAction := maException;
+      FAgentClient.IOHandler.MaxLineLength := 16 * 1024 * 1024;
+    end;
+    try
+      FAgentClient.Socket.UseNagle := False;
+    except
+    end;
+  except
+    on E: Exception do
+    begin
+      StatusValue := csConnectionFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      UpdateModeStatusBar;
+      FLogger.AddError(msIdle, 'Agent connect failed: ' + E.Message);
+      FreeAndNil(FAgentClient);
+      Exit;
+    end;
+  end;
+
+  HelloObj := TJSONObject.Create;
+  try
+    HelloObj.AddPair('type', MSG_HELLO);
+    HelloObj.AddPair('agentType', AgentKindToString(Kind));
+    HelloObj.AddPair('password', Password);
+    SendJsonToServer(HelloObj);
+  finally
+    HelloObj.Free;
+  end;
+
+  try
+    AuthLine := FAgentClient.IOHandler.ReadLn;
+  except
+    on E: Exception do
+    begin
+      StatusValue := csConnectionFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      UpdateModeStatusBar;
+      FLogger.AddError(msIdle, 'Auth result read failed: ' + E.Message);
+      DisconnectAgentConnection(False);
+      Exit;
+    end;
+  end;
+
+  JsonValue := TJSONObject.ParseJSONValue(AuthLine);
+  if not (JsonValue is TJSONObject) then
+  begin
+    StatusValue := csAuthFailed;
+    UpdateAgentStatusLabel(StatusValue, StatusLabel);
+    UpdateModeStatusBar;
+    DisconnectAgentConnection(False);
+    Exit;
+  end;
+
+  AuthObj := TJSONObject(JsonValue);
+  try
+    AuthOk := JsonGetBoolean(AuthObj, 'ok', False);
+    if not AuthOk then
+    begin
+      StatusValue := csAuthFailed;
+      UpdateAgentStatusLabel(StatusValue, StatusLabel);
+      UpdateModeStatusBar;
+      FLogger.AddError(msIdle, 'Auth failed: ' + JsonGetString(AuthObj, 'reason', 'Auth failed'));
+      DisconnectAgentConnection(False);
+      Exit;
+    end;
+  finally
+    AuthObj.Free;
+  end;
+
+  StatusValue := csConnected;
+  UpdateAgentStatusLabel(StatusValue, StatusLabel);
+  UpdateModeStatusBar;
+  FLogger.AddInfo(msIdle, Format('%s agent connected to server %s:%d',
+    [AgentKindToString(Kind), Trim(ServerIP), Port]));
+  StartAgentReader(Kind);
+end;
+
+procedure TMainForm.DisconnectAgentConnection(const UpdateStatus: Boolean);
+begin
+  FAgentDisconnecting := True;
+  try
+    if Assigned(FAgentReaderThread) then
+    begin
+      FAgentReaderThread.Terminate;
+      if Assigned(FAgentClient) and FAgentClient.Connected then
+      begin
+        try
+          FAgentClient.Disconnect;
+        except
+        end;
+      end;
+      FAgentReaderThread.WaitFor;
+      FreeAndNil(FAgentReaderThread);
+    end
+    else if Assigned(FAgentClient) and FAgentClient.Connected then
+    begin
+      try
+        FAgentClient.Disconnect;
+      except
+      end;
+    end;
+
+    FreeAndNil(FAgentClient);
+    AgentCloseIncomingFile;
+    AgentCloseOutgoingFile;
+  finally
+    FAgentDisconnecting := False;
+  end;
+
+  if not UpdateStatus then
+    Exit;
+
+  if FAgentKind = akSource then
+  begin
+    FSourceAgentStatus := csDisconnected;
+    UpdateAgentStatusLabel(FSourceAgentStatus, lblSourceAgentStatusValue);
+  end
+  else if FAgentKind = akTarget then
+  begin
+    FTargetAgentStatus := csDisconnected;
+    UpdateAgentStatusLabel(FTargetAgentStatus, lblTargetAgentStatusValue);
+  end;
+  UpdateModeStatusBar;
+end;
+
+procedure TMainForm.StartAgentReader(const Kind: TAgentKind);
+begin
+  if Assigned(FAgentReaderThread) then
+    Exit;
+
+  FAgentReaderThread := TThread.CreateAnonymousThread(
+    procedure
+    var
+      Line: string;
+      Payload: TAgentDisconnectPayload;
+    begin
+      while True do
+      begin
+        if FAgentDisconnecting then
+          Break;
+        if not Assigned(FAgentClient) then
+          Break;
+        if not FAgentClient.Connected then
+          Break;
+
+        try
+          Line := FAgentClient.IOHandler.ReadLn;
+        except
+          on E: Exception do
+          begin
+            if not FAgentDisconnecting and Assigned(FLogger) then
+              FLogger.AddWarning(msIdle, 'Agent read error: ' + E.Message);
+            Break;
+          end;
+        end;
+
+        if Trim(Line) = '' then
+          Continue;
+        ProcessAgentIncomingLine(Line);
+      end;
+
+      Payload := TAgentDisconnectPayload.Create;
+      Payload.Kind := Kind;
+      PostUiMessage(WM_APP_AGENT_DISCONNECT, Payload);
+    end);
+
+  FAgentReaderThread.FreeOnTerminate := False;
+  FAgentReaderThread.Start;
+end;
+
+procedure TMainForm.ProcessAgentIncomingLine(const Line: string);
+var
+  JsonValue: TJSONValue;
+  MessageObj: TJSONObject;
+begin
+  JsonValue := TJSONObject.ParseJSONValue(Line);
+  if not (JsonValue is TJSONObject) then
+  begin
+    if Assigned(FLogger) then
+      FLogger.AddWarning(msIdle, 'Agent received invalid JSON message');
+    JsonValue.Free;
+    Exit;
+  end;
+
+  MessageObj := TJSONObject(JsonValue);
+  try
+    HandleAgentRequest(MessageObj);
+  finally
+    MessageObj.Free;
+  end;
+end;
+
+procedure TMainForm.HandleAgentRequest(MessageObj: TJSONObject);
+var
+  MessageType: string;
+  RequestId: string;
+  DbHost: string;
+  DbPort: Integer;
+  PDB: string;
+  SysUser: string;
+  SysPassword: string;
+  DpumpRoot: string;
+  ModeValue: string;
+  SchemaName: string;
+  SchemaPassword: string;
+  SourceSchemaName: string;
+  SourceTablespaces: string;
+  TargetTablespace: string;
+  JobId: string;
+  ImportLogFile: string;
+  InvalidSummary: string;
+  Schemas: TArray<string>;
+  ExportFiles: TArray<string>;
+  Tablespaces: TArray<string>;
+  PrimaryTS: string;
+  ErrorText: string;
+  ResponseObj: TJSONObject;
+  OkValue: Boolean;
+  CurrentDir: string;
+  TmpDir: string;
+  SqlPlusPath: string;
+  ExpdpPath: string;
+  ImpdpPath: string;
+  TransferPath: string;
+  FileName: string;
+  Offset: Int64;
+  ChunkSize: Integer;
+  ReadCount: Integer;
+  ChunkBytes: TBytes;
+  DataText: string;
+  FileSize: Int64;
+  ExpectedSize: Int64;
+  ExpectedSha: string;
+  ActualSha: string;
+  LocalFile: TFileStream;
+begin
+  MessageType := JsonGetString(MessageObj, 'type', '');
+  if MessageType = '' then
+    Exit;
+  RequestId := JsonGetString(MessageObj, 'requestId', '');
+
+  DbHost := JsonGetString(MessageObj, 'dbHost', '127.0.0.1');
+  DbPort := JsonGetInteger(MessageObj, 'dbPort', 1521);
+  PDB := JsonGetString(MessageObj, 'pdb', '');
+  SysUser := JsonGetString(MessageObj, 'sysUser', '');
+  SysPassword := JsonGetString(MessageObj, 'sysPassword', '');
+  DpumpRoot := JsonGetString(MessageObj, 'dpumpRoot', '');
+  ModeValue := JsonGetString(MessageObj, 'mode', '');
+
+  if SameText(MessageType, MSG_LIST_SCHEMAS_REQUEST) then
+  begin
+    OkValue := QuerySchemas(DbHost, DbPort, PDB, SysUser, SysPassword, Schemas, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_LIST_SCHEMAS_RESPONSE);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      ResponseObj.AddPair('agentType', AgentKindToString(FAgentKind));
+      ResponseObj.AddPair('pdb', PDB);
+      ResponseObj.AddPair('schemas', StringArrayToJson(Schemas));
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_GET_TABLESPACES_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    OkValue := QueryTablespaces(DbHost, DbPort, PDB, SysUser, SysPassword, SchemaName,
+      PrimaryTS, Tablespaces, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_GET_TABLESPACES_RESPONSE);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      ResponseObj.AddPair('agentType', AgentKindToString(FAgentKind));
+      ResponseObj.AddPair('schema', SchemaName);
+      ResponseObj.AddPair('primaryTablespace', PrimaryTS);
+      ResponseObj.AddPair('tablespaces', StringArrayToJson(Tablespaces));
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_PRECHECK_REQUEST) then
+  begin
+    OkValue := AgentRunPrecheck(DpumpRoot, PDB, SysUser, SysPassword,
+      JsonGetString(MessageObj, 'schema', ''), JsonGetString(MessageObj, 'requiredTablespace', ''),
+      SqlPlusPath, ExpdpPath, ImpdpPath, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_PRECHECK_RESPONSE);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('sqlplusPath', SqlPlusPath);
+      ResponseObj.AddPair('expdpPath', ExpdpPath);
+      ResponseObj.AddPair('impdpPath', ImpdpPath);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_PREPARE_FOLDERS_REQUEST) then
+  begin
+    OkValue := PrepareAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_PREPARE_FOLDERS_RESPONSE);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('currentDir', CurrentDir);
+      ResponseObj.AddPair('tmpDir', TmpDir);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_PREPARE_DIRECTORY_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    OkValue := AgentRunPrepareDirectory(DpumpRoot, PDB, SysUser, SysPassword, SchemaName, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_PREPARE_DIRECTORY_RESPONSE);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_RUN_EXPORT_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    SchemaPassword := JsonGetString(MessageObj, 'schemaPassword', '');
+    JobId := JsonGetString(MessageObj, 'jobId', '');
+    OkValue := AgentRunExport(DpumpRoot, PDB, SchemaName, SchemaPassword, SysUser, SysPassword,
+      JobId, RequestId, ExportFiles, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_RUN_EXPORT_RESULT);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('files', StringArrayToJson(ExportFiles));
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_RUN_CLEAN_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    SchemaPassword := JsonGetString(MessageObj, 'schemaPassword', '');
+    TargetTablespace := JsonGetString(MessageObj, 'tablespace', '');
+    OkValue := AgentRunClean(PDB, SysUser, SysPassword, SchemaName, SchemaPassword,
+      TargetTablespace, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_RUN_CLEAN_RESULT);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_RUN_IMPORT_REQUEST) then
+  begin
+    SourceSchemaName := JsonGetString(MessageObj, 'sourceSchema', '');
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    SchemaPassword := JsonGetString(MessageObj, 'schemaPassword', '');
+    TargetTablespace := JsonGetString(MessageObj, 'targetTablespace', '');
+    SourceTablespaces := JsonGetString(MessageObj, 'sourceTablespaces', '');
+    JobId := JsonGetString(MessageObj, 'jobId', '');
+    OkValue := AgentRunImport(DpumpRoot, PDB, SourceSchemaName, SchemaName, SchemaPassword,
+      TargetTablespace, SourceTablespaces, JobId, RequestId, ImportLogFile, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_RUN_IMPORT_RESULT);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('importLog', ImportLogFile);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_POSTCHECK_REQUEST) then
+  begin
+    SchemaName := JsonGetString(MessageObj, 'schema', '');
+    OkValue := AgentRunPostCheck(PDB, SysUser, SysPassword, SchemaName, InvalidSummary, ErrorText);
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_POSTCHECK_RESPONSE);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if OkValue then
+        ResponseObj.AddPair('ok', TJSONTrue.Create)
+      else
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('invalidSummary', InvalidSummary);
+      ResponseObj.AddPair('error', ErrorText);
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_FILE_BEGIN) then
+  begin
+    FileName := ExtractFileName(JsonGetString(MessageObj, 'fileName', ''));
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_FILE_ACK);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+      if FileName = '' then
+      begin
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+        ResponseObj.AddPair('error', 'FileName is empty');
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      if SameText(ModeValue, 'read') then
+      begin
+        TransferPath := TPath.Combine(TPath.Combine(DpumpRoot, 'current'), FileName);
+        if not TFile.Exists(TransferPath) then
+        begin
+          ResponseObj.AddPair('ok', TJSONFalse.Create);
+          ResponseObj.AddPair('error', 'Source file not found: ' + FileName);
+        end
+        else
+        begin
+          try
+            if (not Assigned(FAgentOutgoingFileStream)) or
+               (not SameText(FAgentOutgoingFilePath, TransferPath)) then
+            begin
+              AgentCloseOutgoingFile;
+              FAgentOutgoingFileStream := TFileStream.Create(TransferPath, fmOpenRead or fmShareDenyWrite);
+              FAgentOutgoingFilePath := TransferPath;
+              FAgentOutgoingFileSize := FAgentOutgoingFileStream.Size;
+              FAgentOutgoingFileSha256 := THashSHA2.GetHashStringFromFile(TransferPath);
+            end;
+            ResponseObj.AddPair('ok', TJSONTrue.Create);
+            ResponseObj.AddPair('size', TJSONNumber.Create(FAgentOutgoingFileSize));
+            ResponseObj.AddPair('sha256', FAgentOutgoingFileSha256);
+          except
+            on E: Exception do
+            begin
+              AgentCloseOutgoingFile;
+              ResponseObj.AddPair('ok', TJSONFalse.Create);
+              ResponseObj.AddPair('error', E.Message);
+            end;
+          end;
+        end;
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      if SameText(ModeValue, 'write') then
+      begin
+        TransferPath := TPath.Combine(TPath.Combine(DpumpRoot, 'current'), FileName);
+        try
+          TDirectory.CreateDirectory(ExtractFilePath(TransferPath));
+          AgentCloseIncomingFile;
+          FAgentIncomingFilePath := TransferPath;
+          FAgentIncomingFileStream := TFileStream.Create(TransferPath, fmCreate);
+          ResponseObj.AddPair('ok', TJSONTrue.Create);
+          ResponseObj.AddPair('error', '');
+        except
+          on E: Exception do
+          begin
+            AgentCloseIncomingFile;
+            ResponseObj.AddPair('ok', TJSONFalse.Create);
+            ResponseObj.AddPair('error', E.Message);
+          end;
+        end;
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      ResponseObj.AddPair('ok', TJSONFalse.Create);
+      ResponseObj.AddPair('error', 'Unsupported file mode');
+      SendJsonToServer(ResponseObj);
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if SameText(MessageType, MSG_FILE_CHUNK) then
+  begin
+    FileName := ExtractFileName(JsonGetString(MessageObj, 'fileName', ''));
+    if SameText(ModeValue, 'read') then
+    begin
+      TransferPath := TPath.Combine(TPath.Combine(DpumpRoot, 'current'), FileName);
+      Offset := StrToInt64Def(JsonGetString(MessageObj, 'offset', '0'), 0);
+      ChunkSize := JsonGetInteger(MessageObj, 'chunkSize', 0);
+      if ChunkSize <= 0 then
+        ChunkSize := 1024 * 1024;
+      if ChunkSize > (8 * 1024 * 1024) then
+        ChunkSize := 8 * 1024 * 1024;
+
+      ResponseObj := TJSONObject.Create;
+      try
+        ResponseObj.AddPair('type', MSG_FILE_CHUNK);
+        if RequestId <> '' then
+          ResponseObj.AddPair('requestId', RequestId);
+        if (not Assigned(FAgentOutgoingFileStream)) or
+           (not SameText(FAgentOutgoingFilePath, TransferPath)) then
+        begin
+          if not TFile.Exists(TransferPath) then
+          begin
+            ResponseObj.AddPair('ok', TJSONFalse.Create);
+            ResponseObj.AddPair('error', 'Source file not found');
+            SendJsonToServer(ResponseObj);
+            Exit;
+          end;
+          try
+            AgentCloseOutgoingFile;
+            FAgentOutgoingFileStream := TFileStream.Create(TransferPath, fmOpenRead or fmShareDenyWrite);
+            FAgentOutgoingFilePath := TransferPath;
+            FAgentOutgoingFileSize := FAgentOutgoingFileStream.Size;
+            FAgentOutgoingFileSha256 := THashSHA2.GetHashStringFromFile(TransferPath);
+          except
+            on E: Exception do
+            begin
+              AgentCloseOutgoingFile;
+              ResponseObj.AddPair('ok', TJSONFalse.Create);
+              ResponseObj.AddPair('error', E.Message);
+              SendJsonToServer(ResponseObj);
+              Exit;
+            end;
+          end;
+        end;
+
+        if Offset > FAgentOutgoingFileSize then
+          Offset := FAgentOutgoingFileSize;
+        FAgentOutgoingFileStream.Position := Offset;
+        SetLength(ChunkBytes, ChunkSize);
+        ReadCount := FAgentOutgoingFileStream.Read(ChunkBytes[0], ChunkSize);
+        if ReadCount < 0 then
+          ReadCount := 0;
+        SetLength(ChunkBytes, ReadCount);
+        DataText := TNetEncoding.Base64.EncodeBytesToString(ChunkBytes);
+        ResponseObj.AddPair('ok', TJSONTrue.Create);
+        ResponseObj.AddPair('bytesRead', TJSONNumber.Create(ReadCount));
+        if (Offset + ReadCount) >= FAgentOutgoingFileSize then
+          ResponseObj.AddPair('eof', TJSONTrue.Create)
+        else
+          ResponseObj.AddPair('eof', TJSONFalse.Create);
+        ResponseObj.AddPair('data', DataText);
+        ResponseObj.AddPair('error', '');
+        SendJsonToServer(ResponseObj);
+      finally
+        ResponseObj.Free;
+      end;
+      Exit;
+    end;
+
+    if SameText(ModeValue, 'write') then
+    begin
+      ResponseObj := TJSONObject.Create;
+      try
+        ResponseObj.AddPair('type', MSG_FILE_ACK);
+        if RequestId <> '' then
+          ResponseObj.AddPair('requestId', RequestId);
+        if not Assigned(FAgentIncomingFileStream) then
+        begin
+          ResponseObj.AddPair('ok', TJSONFalse.Create);
+          ResponseObj.AddPair('error', 'No incoming file stream');
+          SendJsonToServer(ResponseObj);
+          Exit;
+        end;
+
+        DataText := JsonGetString(MessageObj, 'data', '');
+        try
+          ChunkBytes := TNetEncoding.Base64.DecodeStringToBytes(DataText);
+          if Length(ChunkBytes) > 0 then
+            FAgentIncomingFileStream.WriteBuffer(ChunkBytes[0], Length(ChunkBytes));
+          ResponseObj.AddPair('ok', TJSONTrue.Create);
+          ResponseObj.AddPair('bytesWritten', TJSONNumber.Create(Length(ChunkBytes)));
+          ResponseObj.AddPair('error', '');
+        except
+          on E: Exception do
+          begin
+            ResponseObj.AddPair('ok', TJSONFalse.Create);
+            ResponseObj.AddPair('error', E.Message);
+          end;
+        end;
+        SendJsonToServer(ResponseObj);
+      finally
+        ResponseObj.Free;
+      end;
+      Exit;
+    end;
+  end;
+
+  if SameText(MessageType, MSG_FILE_END) then
+  begin
+    ResponseObj := TJSONObject.Create;
+    try
+      ResponseObj.AddPair('type', MSG_FILE_ACK);
+      if RequestId <> '' then
+        ResponseObj.AddPair('requestId', RequestId);
+
+      if SameText(ModeValue, 'read') then
+      begin
+        AgentCloseOutgoingFile;
+        ResponseObj.AddPair('ok', TJSONTrue.Create);
+        ResponseObj.AddPair('error', '');
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      if SameText(ModeValue, 'abort') then
+      begin
+        TransferPath := FAgentIncomingFilePath;
+        AgentCloseIncomingFile;
+        if (TransferPath <> '') and TFile.Exists(TransferPath) then
+        begin
+          try
+            TFile.Delete(TransferPath);
+          except
+          end;
+        end;
+        ResponseObj.AddPair('ok', TJSONTrue.Create);
+        ResponseObj.AddPair('error', '');
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      if not SameText(ModeValue, 'write') then
+      begin
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+        ResponseObj.AddPair('error', 'Unsupported file end mode');
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      if not Assigned(FAgentIncomingFileStream) then
+      begin
+        ResponseObj.AddPair('ok', TJSONFalse.Create);
+        ResponseObj.AddPair('error', 'No incoming file stream');
+        SendJsonToServer(ResponseObj);
+        Exit;
+      end;
+
+      ExpectedSize := StrToInt64Def(JsonGetString(MessageObj, 'size', '0'), 0);
+      ExpectedSha := JsonGetString(MessageObj, 'sha256', '');
+      FAgentIncomingFileStream.Free;
+      FAgentIncomingFileStream := nil;
+      try
+        if ExpectedSize >= 0 then
+        begin
+          LocalFile := TFileStream.Create(FAgentIncomingFilePath, fmOpenRead or fmShareDenyNone);
+          try
+            FileSize := LocalFile.Size;
+          finally
+            LocalFile.Free;
+          end;
+          if FileSize <> ExpectedSize then
+            raise Exception.Create('Size mismatch after transfer');
+        end;
+        if (ExpectedSha <> '') then
+        begin
+          ActualSha := THashSHA2.GetHashStringFromFile(FAgentIncomingFilePath);
+          if not SameText(ActualSha, ExpectedSha) then
+            raise Exception.Create('Checksum mismatch after transfer');
+        end;
+        ResponseObj.AddPair('ok', TJSONTrue.Create);
+        ResponseObj.AddPair('error', '');
+      except
+        on E: Exception do
+        begin
+          ResponseObj.AddPair('ok', TJSONFalse.Create);
+          ResponseObj.AddPair('error', E.Message);
+        end;
+      end;
+      SendJsonToServer(ResponseObj);
+      FAgentIncomingFilePath := '';
+    finally
+      ResponseObj.Free;
+    end;
+    Exit;
+  end;
+
+  if Assigned(FLogger) then
+    FLogger.AddWarning(msIdle, 'Agent received unsupported command: ' + MessageType);
+end;
+
+procedure TMainForm.SendJsonToServer(MessageObj: TJSONObject);
+begin
+  if not Assigned(FAgentClient) then
+    Exit;
+  if not FAgentClient.Connected then
+    Exit;
+  if not Assigned(FSendLock) then
+    Exit;
+  try
+    FSendLock.Acquire;
+    try
+      FAgentClient.IOHandler.WriteLn(MessageObj.ToJSON, IndyTextEncoding_UTF8);
+    finally
+      FSendLock.Release;
+    end;
+  except
+    on E: Exception do
+      FLogger.AddWarning(msIdle, 'Failed to send message to server: ' + E.Message);
+  end;
+end;
+
+function TMainForm.ResolveSqlPlusPath: string;
+var
+  BinValue: string;
+  OracleHome: string;
+  Candidate: string;
+begin
+  BinValue := NormalizePathToken(FSettings.OracleClientBin);
+  if BinValue <> '' then
+  begin
+    if SameText(TPath.GetExtension(BinValue), '.exe') then
+    begin
+      if SameText(ExtractFileName(BinValue), 'sqlplus.exe') then
+        Candidate := BinValue
+      else
+        Candidate := TPath.Combine(ExtractFileDir(BinValue), 'sqlplus.exe');
+    end
+    else
+      Candidate := TPath.Combine(BinValue, 'sqlplus.exe');
+    if FileExists(Candidate) then
+      Exit(Candidate);
+  end;
+
+  OracleHome := NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'));
+  if OracleHome <> '' then
+  begin
+    Candidate := TPath.Combine(OracleHome, 'bin\sqlplus.exe');
+    if FileExists(Candidate) then
+      Exit(Candidate);
+  end;
+
+  if TryResolveOracleToolFromRegistry('sqlplus.exe', Candidate) then
+    Exit(Candidate);
+
+  Result := 'sqlplus.exe';
+end;
+
+function TMainForm.BuildSqlConnectClause(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword: string): string;
+var
+  HostValue: string;
+  PortValue: Integer;
+  Suffix: string;
+begin
+  HostValue := Trim(DbHost);
+  if HostValue = '' then
+    HostValue := '127.0.0.1';
+
+  PortValue := DbPort;
+  if PortValue <= 0 then
+    PortValue := 1521;
+
+  Suffix := '';
+  if SameText(Trim(SysUser), 'sys') then
+    Suffix := ' as sysdba';
+
+  Result := Format('connect %s/"%s"@//%s:%d/%s%s',
+    [Trim(SysUser), EscapeSqlPassword(SysPassword), HostValue, PortValue, Trim(PDB), Suffix]);
+end;
+
+function TMainForm.RunSqlPlusScript(const ScriptText: string; out OutputLines: TArray<string>;
+  out ErrorText: string): Boolean;
+var
+  ScriptFile: string;
+  ScriptList: TStringList;
+  ProcessResult: TProcessRunResult;
+  ExePath: string;
+  NewGuid: TGUID;
+begin
+  SetLength(OutputLines, 0);
+  ErrorText := '';
+
+  CreateGUID(NewGuid);
+  ScriptFile := TPath.Combine(TPath.GetTempPath,
+    'kapps_sqlplus_' + StringReplace(GuidToString(NewGuid), '-', '', [rfReplaceAll]) + '.sql');
+  ScriptFile := StringReplace(ScriptFile, '{', '', [rfReplaceAll]);
+  ScriptFile := StringReplace(ScriptFile, '}', '', [rfReplaceAll]);
+
+  ScriptList := TStringList.Create;
+  try
+    ScriptList.Text := ScriptText;
+    ScriptList.SaveToFile(ScriptFile, TEncoding.ANSI);
+  finally
+    ScriptList.Free;
+  end;
+
+  try
+    ExePath := ResolveSqlPlusPath;
+    ProcessResult := TProcessRunner.Run(ExePath, '-s /nolog @"' + ScriptFile + '"',
+      ExtractFilePath(ScriptFile), 180000);
+    OutputLines := ProcessResult.Output;
+    if ProcessResult.TimedOut then
+    begin
+      ErrorText := 'sqlplus timeout';
+      Exit(False);
+    end;
+    if ProcessResult.ExitCode <> 0 then
+    begin
+      ErrorText := Format('sqlplus exit code %d', [ProcessResult.ExitCode]);
+      Exit(False);
+    end;
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      Exit(False);
+    end;
+  end;
+
+  Result := True;
+  try
+    TFile.Delete(ScriptFile);
+  except
+  end;
+end;
+
+function TMainForm.QuerySchemas(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword: string; out Schemas: TArray<string>; out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  Items: TStringList;
+  I: Integer;
+begin
+  SetLength(Schemas, 0);
+  ErrorText := '';
+
+  if Trim(PDB) = '' then
+  begin
+    ErrorText := 'PDB is empty';
+    Exit(False);
+  end;
+  if Trim(SysUser) = '' then
+  begin
+    ErrorText := 'SYS user is empty';
+    Exit(False);
+  end;
+
+  ScriptText :=
+    'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause(DbHost, DbPort, PDB, SysUser, SysPassword) + sLineBreak +
+    'select username' + sLineBreak +
+    '  from dba_users' + sLineBreak +
+    ' where oracle_maintained = ''N''' + sLineBreak +
+    '   and username not in (''SYS'', ''SYSTEM'')' + sLineBreak +
+    ' order by username;' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  Items := TStringList.Create;
+  try
+    Items.CaseSensitive := False;
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if Trimmed = '' then
+        Continue;
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if SameText(Trimmed, 'Connected.') or StartsText('Connected to', Trimmed) then
+        Continue;
+      if StartsText('Disconnected from', Trimmed) then
+        Continue;
+      if ContainsText(Trimmed, 'rows selected') then
+        Continue;
+      if StartsText('SQL>', Trimmed) then
+        Continue;
+      if Pos(' ', Trimmed) > 0 then
+        Continue;
+      if Items.IndexOf(Trimmed) < 0 then
+        Items.Add(Trimmed);
+    end;
+
+    SetLength(Schemas, Items.Count);
+    for I := 0 to Items.Count - 1 do
+      Schemas[I] := Items[I];
+  finally
+    Items.Free;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.QueryTablespaces(const DbHost: string; DbPort: Integer; const PDB, SysUser,
+  SysPassword, SchemaName: string; out PrimaryTablespace: string; out Tablespaces: TArray<string>;
+  out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  Parts: TArray<string>;
+  Items: TStringList;
+  DefaultTS: string;
+  I: Integer;
+begin
+  PrimaryTablespace := '';
+  SetLength(Tablespaces, 0);
+  ErrorText := '';
+  DefaultTS := '';
+
+  if Trim(SchemaName) = '' then
+  begin
+    ErrorText := 'Schema is empty';
+    Exit(False);
+  end;
+
+  ScriptText :=
+    'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause(DbHost, DbPort, PDB, SysUser, SysPassword) + sLineBreak +
+    'select ''DEFAULT|'' || default_tablespace from dba_users where username = upper(''' +
+    EscapeSqlLiteral(SchemaName) + ''');' + sLineBreak +
+    'select ''SEG|'' || tablespace_name || ''|'' || cnt' + sLineBreak +
+    '  from (' + sLineBreak +
+    '        select tablespace_name, count(*) cnt' + sLineBreak +
+    '          from dba_segments' + sLineBreak +
+    '         where owner = upper(''' + EscapeSqlLiteral(SchemaName) + ''')' + sLineBreak +
+    '         group by tablespace_name' + sLineBreak +
+    '         order by cnt desc' + sLineBreak +
+    '       );' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  Items := TStringList.Create;
+  try
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if Trimmed = '' then
+        Continue;
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if StartsText('DEFAULT|', Trimmed) then
+      begin
+        DefaultTS := Copy(Trimmed, Length('DEFAULT|') + 1, MaxInt);
+        Continue;
+      end;
+      if StartsText('SEG|', Trimmed) then
+      begin
+        Parts := SplitAndTrim(Trimmed, '|');
+        if Length(Parts) >= 2 then
+        begin
+          if PrimaryTablespace = '' then
+            PrimaryTablespace := Parts[1];
+          if Items.IndexOf(Parts[1]) < 0 then
+            Items.Add(Parts[1]);
+        end;
+      end;
+    end;
+
+    if (DefaultTS <> '') and (Items.IndexOf(DefaultTS) < 0) then
+      Items.Add(DefaultTS);
+    if PrimaryTablespace = '' then
+      PrimaryTablespace := DefaultTS;
+    if (PrimaryTablespace = '') and (Items.Count > 0) then
+      PrimaryTablespace := Items[0];
+
+    if (Items.Count = 0) and (PrimaryTablespace = '') then
+    begin
+      ErrorText := 'No tablespace data returned';
+      Exit(False);
+    end;
+
+    SetLength(Tablespaces, Items.Count);
+    for I := 0 to Items.Count - 1 do
+      Tablespaces[I] := Items[I];
+  finally
+    Items.Free;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.BuildRequestId: string;
+var
+  NewGuid: TGUID;
+begin
+  CreateGUID(NewGuid);
+  Result := LowerCase(GuidToString(NewGuid));
+  Result := StringReplace(Result, '{', '', [rfReplaceAll]);
+  Result := StringReplace(Result, '}', '', [rfReplaceAll]);
+  Result := StringReplace(Result, '-', '', [rfReplaceAll]);
+end;
+
+function TMainForm.IsDistributedMigrationRunning: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(FMigrationRunningFlag, 1, 1) = 1;
+end;
+
+procedure TMainForm.ReportDistributedProgress(const Stage: TMigrationStage; const Percent: Integer;
+  const MessageText: string);
+var
+  Payload: TOrchestratorProgressPayload;
+begin
+  Payload := TOrchestratorProgressPayload.Create;
+  Payload.Stage := Stage;
+  Payload.Percent := Percent;
+  Payload.MessageText := MessageText;
+  PostUiMessage(WM_APP_ORCH_PROGRESS, Payload);
+end;
+
+procedure TMainForm.FinishDistributedMigration(const AResult: TMigrationResult; const Summary: string);
+var
+  Payload: TOrchestratorCompletedPayload;
+begin
+  TInterlocked.Exchange(FMigrationRunningFlag, 0);
+  Payload := TOrchestratorCompletedPayload.Create;
+  Payload.ResultState := AResult;
+  Payload.Summary := Summary;
+  PostUiMessage(WM_APP_ORCH_COMPLETED, Payload);
+end;
+
+procedure TMainForm.StartDistributedMigration(const Request: TMigrationRequest);
+var
+  LocalRequest: TMigrationRequest;
+begin
+  if TInterlocked.CompareExchange(FMigrationRunningFlag, 1, 0) <> 0 then
+    raise Exception.Create('Migration job is already running');
+
+  FMaskSourceSysPassword := Request.Source.SysPassword;
+  FMaskSourceSchemaPassword := Request.Source.SchemaPassword;
+  FMaskTargetSysPassword := Request.Target.SysPassword;
+  FMaskTargetSchemaPassword := Request.Target.SchemaPassword;
+
+  if Assigned(FMigrationThread) then
+  begin
+    FMigrationThread.WaitFor;
+    FreeAndNil(FMigrationThread);
+  end;
+
+  try
+    LocalRequest := Request;
+    FMigrationThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        RunDistributedMigration(LocalRequest);
+      end);
+    FMigrationThread.FreeOnTerminate := False;
+    FMigrationThread.Start;
+  except
+    TInterlocked.Exchange(FMigrationRunningFlag, 0);
+    raise;
+  end;
+end;
+
+function TMainForm.TryCapturePendingResponse(Peer: TPeerState; MessageObj: TJSONObject): Boolean;
+var
+  ReqId: string;
+  MsgType: string;
+  IsMatch: Boolean;
+begin
+  Result := False;
+  ReqId := JsonGetString(MessageObj, 'requestId', '');
+  if ReqId = '' then
+    Exit;
+  MsgType := JsonGetString(MessageObj, 'type', '');
+  if MsgType = '' then
+    Exit;
+
+  FRpcLock.Acquire;
+  try
+    IsMatch := (FRpcPendingRequestId <> '') and
+      SameText(FRpcPendingRequestId, ReqId) and
+      SameText(FRpcPendingExpectedType, MsgType) and
+      (((FRpcPendingKind = akSource) and Assigned(Peer) and (Peer.AgentKind = akSource)) or
+       ((FRpcPendingKind = akTarget) and Assigned(Peer) and (Peer.AgentKind = akTarget)));
+
+    if IsMatch then
+    begin
+      FRpcResponseJson := MessageObj.ToJSON;
+      FRpcEvent.SetEvent;
+      Result := True;
+    end;
+  finally
+    FRpcLock.Release;
+  end;
+end;
+
+function TMainForm.SendAgentRequest(const Kind: TAgentKind; RequestObj: TJSONObject;
+  const ExpectedType: string; const TimeoutMs: Cardinal; out ResponseObj: TJSONObject;
+  out ErrorText: string): Boolean;
+var
+  Context: TIdContext;
+  RequestId: string;
+  WaitRes: TWaitResult;
+  ResponseJson: string;
+  JsonValue: TJSONValue;
+begin
+  Result := False;
+  ResponseObj := nil;
+  ErrorText := '';
+
+  Context := GetAgentContext(Kind = akSource);
+  if not Assigned(Context) then
+  begin
+    ErrorText := AgentKindToString(Kind) + ' is not connected';
+    Exit;
+  end;
+  if (not Assigned(Context.Connection)) or (not Context.Connection.Connected) then
+  begin
+    ErrorText := AgentKindToString(Kind) + ' connection is closed';
+    Exit;
+  end;
+
+  RequestId := BuildRequestId;
+  RequestObj.AddPair('requestId', RequestId);
+
+  FRpcLock.Acquire;
+  try
+    FRpcPendingRequestId := RequestId;
+    FRpcPendingExpectedType := ExpectedType;
+    FRpcPendingKind := Kind;
+    FRpcResponseJson := '';
+    FRpcEvent.ResetEvent;
+  finally
+    FRpcLock.Release;
+  end;
+
+  try
+    SendJsonToContext(Context, RequestObj, True);
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      FRpcLock.Acquire;
+      try
+        FRpcPendingRequestId := '';
+        FRpcPendingExpectedType := '';
+        FRpcPendingKind := akUnknown;
+        FRpcResponseJson := '';
+      finally
+        FRpcLock.Release;
+      end;
+      Exit;
+    end;
+  end;
+
+  WaitRes := FRpcEvent.WaitFor(TimeoutMs);
+  if WaitRes <> wrSignaled then
+  begin
+    ErrorText := Format('%s request timeout (%s)', [AgentKindToString(Kind), ExpectedType]);
+    FRpcLock.Acquire;
+    try
+      FRpcPendingRequestId := '';
+      FRpcPendingExpectedType := '';
+      FRpcPendingKind := akUnknown;
+      FRpcResponseJson := '';
+    finally
+      FRpcLock.Release;
+    end;
+    Exit;
+  end;
+
+  FRpcLock.Acquire;
+  try
+    ResponseJson := FRpcResponseJson;
+    FRpcPendingRequestId := '';
+    FRpcPendingExpectedType := '';
+    FRpcPendingKind := akUnknown;
+    FRpcResponseJson := '';
+  finally
+    FRpcLock.Release;
+  end;
+
+  JsonValue := TJSONObject.ParseJSONValue(ResponseJson);
+  if not (JsonValue is TJSONObject) then
+  begin
+    JsonValue.Free;
+    ErrorText := 'Invalid JSON response';
+    Exit;
+  end;
+
+  ResponseObj := TJSONObject(JsonValue);
+  Result := True;
+end;
+
+procedure TMainForm.RunDistributedMigration(const Request: TMigrationRequest);
+var
+  ErrorText: string;
+  JobWorkDir: string;
+  ExportFiles: TArray<string>;
+  FinalResult: TMigrationResult;
+  FinalSummary: string;
+  SummaryLines: TStringList;
+  SnapshotLines: TArray<string>;
+  SummaryLine: string;
+  WarnCount: Integer;
+  ErrorCount: Integer;
+begin
+  ErrorText := '';
+  JobWorkDir := TPath.Combine(Request.ServerCacheRoot, Request.JobId);
+  SetLength(ExportFiles, 0);
+  FinalResult := mrFailed;
+  FinalSummary := 'Migration failed';
+  SetLength(SnapshotLines, 0);
+  WarnCount := 0;
+  ErrorCount := 0;
+
+  try
+    try
+      FLogger.AddInfo(msIdle, 'Job started: ' + Request.JobId);
+      ReportDistributedProgress(msPrecheck, 5, 'Precheck started');
+      if FServerSourceStatus <> csConnected then
+        raise Exception.Create('Source agent is disconnected');
+      if FServerTargetStatus <> csConnected then
+        raise Exception.Create('Target agent is disconnected');
+      if not chkServerActive.Checked then
+        raise Exception.Create('Server listener is not active');
+
+      if not ExecutePrecheckStage(Request, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecutePrepareFoldersStage(Request, JobWorkDir, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecutePrepareDirectoryStage(Request, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecuteExportStage(Request, ExportFiles, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecuteTransferStage(Request, JobWorkDir, ExportFiles, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecuteCleanStage(Request, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecuteImportStage(Request, JobWorkDir, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      if not ExecutePostCheckStage(Request, ErrorText) then
+        raise Exception.Create(ErrorText);
+
+      ReportDistributedProgress(msCompleted, 100, 'Migration completed');
+      FLogger.AddInfo(msCompleted, 'Job completed: ' + Request.JobId);
+      FinalResult := mrSuccess;
+      FinalSummary := 'Migration completed';
+      FinishDistributedMigration(mrSuccess, 'Migration completed');
+    except
+      on E: Exception do
+      begin
+        FLogger.AddError(msFailed, E.Message);
+        ReportDistributedProgress(msFailed, 100, E.Message);
+        FinalResult := mrFailed;
+        FinalSummary := E.Message;
+        FinishDistributedMigration(mrFailed, E.Message);
+      end;
+    end;
+  finally
+    try
+      TDirectory.CreateDirectory(JobWorkDir);
+      FLogger.SaveToFile(TPath.Combine(JobWorkDir, 'server_migration.log'));
+      SnapshotLines := FLogger.Snapshot;
+      for SummaryLine in SnapshotLines do
+      begin
+        if ContainsText(SummaryLine, '[WARN]') then
+          Inc(WarnCount);
+        if ContainsText(SummaryLine, '[ERROR]') then
+          Inc(ErrorCount);
+      end;
+      SummaryLines := TStringList.Create;
+      try
+        SummaryLines.Add('Result=' + ResultToString(FinalResult));
+        SummaryLines.Add('Summary=' + FinalSummary);
+        SummaryLines.Add('JobId=' + Request.JobId);
+        SummaryLines.Add('Timestamp=' + FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+        SummaryLines.Add('Warnings=' + IntToStr(WarnCount));
+        SummaryLines.Add('Errors=' + IntToStr(ErrorCount));
+        SummaryLines.Add('ExportFilesCount=' + IntToStr(Length(ExportFiles)));
+        SummaryLines.Add('ExportFiles=' + JoinStringArray(ExportFiles));
+        SummaryLines.SaveToFile(TPath.Combine(JobWorkDir, 'summary.txt'), TEncoding.UTF8);
+      finally
+        SummaryLines.Free;
+      end;
+    except
+    end;
+  end;
+end;
+
+function TMainForm.ExecutePrecheckStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+  SqlPlusPath: string;
+  ExpdpPath: string;
+  ImpdpPath: string;
+begin
+  Result := False;
+  ErrorText := '';
+  ReportDistributedProgress(msPrecheck, 8, 'Running remote precheck on Source and Target');
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PRECHECK_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Source.PDB);
+    RequestObj.AddPair('sysUser', Request.Source.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Source.SysPassword);
+    RequestObj.AddPair('schema', Request.Source.Schema);
+    RequestObj.AddPair('requiredTablespace', '');
+    if not SendAgentRequest(akSource, RequestObj, MSG_PRECHECK_RESPONSE, 60000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Source precheck failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit(False);
+      end;
+      SqlPlusPath := JsonGetString(ResponseObj, 'sqlplusPath', '');
+      ExpdpPath := JsonGetString(ResponseObj, 'expdpPath', '');
+      ImpdpPath := JsonGetString(ResponseObj, 'impdpPath', '');
+      FLogger.AddInfo(msPrecheck, Format('Source tools: sqlplus=%s | expdp=%s | impdp=%s',
+        [SqlPlusPath, ExpdpPath, ImpdpPath]));
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PRECHECK_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Target.PDB);
+    RequestObj.AddPair('sysUser', Request.Target.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Target.SysPassword);
+    RequestObj.AddPair('schema', Request.Target.Schema);
+    RequestObj.AddPair('requiredTablespace', Request.Target.Tablespace);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_PRECHECK_RESPONSE, 60000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Target precheck failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit(False);
+      end;
+      SqlPlusPath := JsonGetString(ResponseObj, 'sqlplusPath', '');
+      ExpdpPath := JsonGetString(ResponseObj, 'expdpPath', '');
+      ImpdpPath := JsonGetString(ResponseObj, 'impdpPath', '');
+      FLogger.AddInfo(msPrecheck, Format('Target tools: sqlplus=%s | expdp=%s | impdp=%s',
+        [SqlPlusPath, ExpdpPath, ImpdpPath]));
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  FLogger.AddInfo(msPrecheck, 'Precheck passed');
+  ReportDistributedProgress(msPrecheck, 12, 'Precheck passed');
+  Result := True;
+end;
+
+procedure TMainForm.CleanupServerCacheRoot(const CacheRoot: string; const KeepDays: Integer);
+var
+  DirList: TArray<string>;
+  DirPath: string;
+  AgeDays: Integer;
+begin
+  if Trim(CacheRoot) = '' then
+    Exit;
+  if KeepDays <= 0 then
+    Exit;
+  if not TDirectory.Exists(CacheRoot) then
+    Exit;
+
+  try
+    DirList := TDirectory.GetDirectories(CacheRoot, '*', TSearchOption.soTopDirectoryOnly);
+    for DirPath in DirList do
+    begin
+      try
+        AgeDays := DaysBetween(Now, TDirectory.GetLastWriteTime(DirPath));
+        if AgeDays > KeepDays then
+          TDirectory.Delete(DirPath, True);
+      except
+        on E: Exception do
+          FLogger.AddWarning(msPrepareFolders,
+            Format('Cache cleanup skipped for %s: %s', [DirPath, E.Message]));
+      end;
+    end;
+  except
+    on E: Exception do
+      FLogger.AddWarning(msPrepareFolders, 'Cache cleanup failed: ' + E.Message);
+  end;
+end;
+
+function TMainForm.ExecutePrepareFoldersStage(const Request: TMigrationRequest;
+  out JobWorkDir: string; out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+begin
+  Result := False;
+  ErrorText := '';
+  JobWorkDir := TPath.Combine(Request.ServerCacheRoot, Request.JobId);
+
+  ReportDistributedProgress(msPrepareFolders, 15, 'Preparing folders');
+  CleanupServerCacheRoot(Request.ServerCacheRoot, FSettings.ServerCacheKeepDays);
+  FLogger.AddInfo(msPrepareFolders,
+    Format('Server cache retention: %d day(s)', [FSettings.ServerCacheKeepDays]));
+
+  try
+    if TDirectory.Exists(JobWorkDir) then
+      TDirectory.Delete(JobWorkDir, True);
+    TDirectory.CreateDirectory(JobWorkDir);
+    TDirectory.CreateDirectory(TPath.Combine(JobWorkDir, 'tmp'));
+  except
+    on E: Exception do
+    begin
+      ErrorText := 'Server cache preparation failed: ' + E.Message;
+      Exit;
+    end;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PREPARE_FOLDERS_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    if not SendAgentRequest(akSource, RequestObj, MSG_PREPARE_FOLDERS_RESPONSE, 60000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Source prepare folders failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit;
+      end;
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PREPARE_FOLDERS_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_PREPARE_FOLDERS_RESPONSE, 60000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Target prepare folders failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit;
+      end;
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  FLogger.AddInfo(msPrepareFolders, 'Folders prepared on Source, Target and Server');
+  ReportDistributedProgress(msPrepareFolders, 25, 'Folders prepared');
+  Result := True;
+end;
+
+function TMainForm.ExecutePrepareDirectoryStage(const Request: TMigrationRequest;
+  out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+begin
+  Result := False;
+  ErrorText := '';
+  ReportDistributedProgress(msPrepareDirectory, 30, 'Preparing Oracle DIRECTORY');
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PREPARE_DIRECTORY_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Source.PDB);
+    RequestObj.AddPair('sysUser', Request.Source.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Source.SysPassword);
+    RequestObj.AddPair('schema', Request.Source.Schema);
+    if not SendAgentRequest(akSource, RequestObj, MSG_PREPARE_DIRECTORY_RESPONSE, 120000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Source prepare directory failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit;
+      end;
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_PREPARE_DIRECTORY_REQUEST);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Target.PDB);
+    RequestObj.AddPair('sysUser', Request.Target.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Target.SysPassword);
+    RequestObj.AddPair('schema', Request.Target.Schema);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_PREPARE_DIRECTORY_RESPONSE, 120000, ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Target prepare directory failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit;
+      end;
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  FLogger.AddInfo(msPrepareDirectory, 'DP_DIR configured on Source and Target');
+  ReportDistributedProgress(msPrepareDirectory, 38, 'Oracle DIRECTORY prepared');
+  Result := True;
+end;
+
+function TMainForm.ExecuteExportStage(const Request: TMigrationRequest;
+  out ExportFiles: TArray<string>; out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+begin
+  Result := False;
+  ErrorText := '';
+  SetLength(ExportFiles, 0);
+  ReportDistributedProgress(msExport, 45, 'Running export on Source');
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_RUN_EXPORT_REQUEST);
+    RequestObj.AddPair('jobId', Request.JobId);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Source.PDB);
+    RequestObj.AddPair('schema', Request.Source.Schema);
+    RequestObj.AddPair('schemaPassword', Request.Source.SchemaPassword);
+    RequestObj.AddPair('sysUser', Request.Source.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Source.SysPassword);
+    if not SendAgentRequest(akSource, RequestObj, MSG_RUN_EXPORT_RESULT, 12 * 60 * 60 * 1000,
+      ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Source export failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit;
+      end;
+      ExportFiles := JsonArrayToStrings(JsonGetArray(ResponseObj, 'files'));
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  if Length(ExportFiles) = 0 then
+  begin
+    ErrorText := 'Source export finished but returned no files';
+    Exit(False);
+  end;
+
+  FLogger.AddInfo(msExport, Format('Source export produced %d file(s)', [Length(ExportFiles)]));
+  ReportDistributedProgress(msExport, 55, 'Export finished');
+  Result := True;
+end;
+
+function TMainForm.ExecuteTransferStage(const Request: TMigrationRequest; const JobWorkDir: string;
+  const ExportFiles: TArray<string>; out ErrorText: string): Boolean;
+var
+  I: Integer;
+  Percent: Integer;
+  Attempt: Integer;
+  LocalError: string;
+  LowerError: string;
+  Done: Boolean;
+begin
+  ErrorText := '';
+  ReportDistributedProgress(msTransport, 58, 'Starting Source -> Server -> Target transfer');
+
+  for I := 0 to High(ExportFiles) do
+  begin
+    Done := False;
+    for Attempt := 1 to 3 do
+    begin
+      LocalError := '';
+      if TransferSingleFile(Request, ExportFiles[I], JobWorkDir, LocalError) then
+      begin
+        Done := True;
+        Break;
+      end;
+      if Attempt < 3 then
+      begin
+        LowerError := LowerCase(LocalError);
+        if (Pos('checksum', LowerError) > 0) or (Pos('mismatch', LowerError) > 0) then
+          FLogger.AddWarning(msTransport, Format('Hash verification failed for %s. Re-transfer %d/3: %s',
+            [ExportFiles[I], Attempt, LocalError]))
+        else
+          FLogger.AddWarning(msTransport, Format('Transfer retry %d for %s: %s',
+            [Attempt, ExportFiles[I], LocalError]));
+        Sleep(1000);
+      end;
+    end;
+    if not Done then
+    begin
+      ErrorText := Format('Failed to transfer %s after retries: %s', [ExportFiles[I], LocalError]);
+      Exit(False);
+    end;
+    Percent := 58 + ((I + 1) * 20) div Length(ExportFiles);
+    ReportDistributedProgress(msTransport, Percent, Format('Transferred %s', [ExportFiles[I]]));
+  end;
+
+  FLogger.AddInfo(msTransport, 'All export files transferred');
+  Result := True;
+end;
+
+function TMainForm.ExecuteCleanStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+begin
+  Result := True;
+  ErrorText := '';
+
+  if not Request.CleanBeforeImport then
+  begin
+    ReportDistributedProgress(msClean, 79, 'Clean before import is disabled');
+    Exit(True);
+  end;
+
+  ReportDistributedProgress(msClean, 79, 'Running clean on Target');
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_RUN_CLEAN_REQUEST);
+    RequestObj.AddPair('pdb', Request.Target.PDB);
+    RequestObj.AddPair('sysUser', Request.Target.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Target.SysPassword);
+    RequestObj.AddPair('schema', Request.Target.Schema);
+    RequestObj.AddPair('schemaPassword', Request.Target.SchemaPassword);
+    RequestObj.AddPair('tablespace', Request.Target.Tablespace);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_RUN_CLEAN_RESULT, 10 * 60 * 1000, ResponseObj, ErrorText) then
+      Exit(False);
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Target clean failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit(False);
+      end;
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  FLogger.AddInfo(msClean, 'Target clean completed');
+end;
+
+function TMainForm.ExecuteImportStage(const Request: TMigrationRequest; const JobWorkDir: string;
+  out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+  ImportLogFile: string;
+  FetchError: string;
+  TargetLogDir: string;
+  ImportOk: Boolean;
+begin
+  Result := False;
+  ErrorText := '';
+  ReportDistributedProgress(msImport, 82, 'Running import on Target');
+  ImportLogFile := '';
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_RUN_IMPORT_REQUEST);
+    RequestObj.AddPair('jobId', Request.JobId);
+    RequestObj.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    RequestObj.AddPair('pdb', Request.Target.PDB);
+    RequestObj.AddPair('sourceSchema', Request.Source.Schema);
+    RequestObj.AddPair('schema', Request.Target.Schema);
+    RequestObj.AddPair('schemaPassword', Request.Target.SchemaPassword);
+    RequestObj.AddPair('targetTablespace', Request.Target.Tablespace);
+    RequestObj.AddPair('sourceTablespaces', Request.Source.Tablespace);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_RUN_IMPORT_RESULT, 12 * 60 * 60 * 1000,
+      ResponseObj, ErrorText) then
+      Exit;
+    try
+      ImportLogFile := JsonGetString(ResponseObj, 'importLog', '');
+      ImportOk := JsonGetBoolean(ResponseObj, 'ok', False);
+      if not ImportOk then
+        ErrorText := 'Target import failed: ' + JsonGetString(ResponseObj, 'error', '');
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  if ImportLogFile <> '' then
+  begin
+    TargetLogDir := TPath.Combine(JobWorkDir, 'target_logs');
+    FetchError := '';
+    if FetchFileFromAgentToServer(akTarget, Request.AgentDpumpRoot, ImportLogFile, TargetLogDir, FetchError) then
+      FLogger.AddInfo(msImport, 'Target import log copied to server cache: ' +
+        TPath.Combine(TargetLogDir, ExtractFileName(ImportLogFile)))
+    else
+      FLogger.AddWarning(msImport, 'Failed to fetch target import log: ' + FetchError);
+  end;
+
+  if not ImportOk then
+    Exit(False);
+
+  ReportDistributedProgress(msImport, 92, 'Import finished');
+  FLogger.AddInfo(msImport, 'Target import completed');
+  Result := True;
+end;
+
+function TMainForm.ExecutePostCheckStage(const Request: TMigrationRequest; out ErrorText: string): Boolean;
+var
+  RequestObj: TJSONObject;
+  ResponseObj: TJSONObject;
+  InvalidSummary: string;
+begin
+  Result := False;
+  ErrorText := '';
+  ReportDistributedProgress(msPostCheck, 95, 'Running post-check on Target');
+
+  RequestObj := TJSONObject.Create;
+  ResponseObj := nil;
+  try
+    RequestObj.AddPair('type', MSG_POSTCHECK_REQUEST);
+    RequestObj.AddPair('pdb', Request.Target.PDB);
+    RequestObj.AddPair('sysUser', Request.Target.SysUser);
+    RequestObj.AddPair('sysPassword', Request.Target.SysPassword);
+    RequestObj.AddPair('schema', Request.Target.Schema);
+    if not SendAgentRequest(akTarget, RequestObj, MSG_POSTCHECK_RESPONSE, 10 * 60 * 1000,
+      ResponseObj, ErrorText) then
+      Exit;
+    try
+      if not JsonGetBoolean(ResponseObj, 'ok', False) then
+      begin
+        ErrorText := 'Target post-check failed: ' + JsonGetString(ResponseObj, 'error', '');
+        Exit(False);
+      end;
+      InvalidSummary := JsonGetString(ResponseObj, 'invalidSummary', '');
+      if InvalidSummary <> '' then
+        FLogger.AddWarning(msPostCheck, InvalidSummary)
+      else
+        FLogger.AddInfo(msPostCheck, 'No invalid objects reported');
+    finally
+      ResponseObj.Free;
+    end;
+  finally
+    RequestObj.Free;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.FetchFileFromAgentToServer(const Kind: TAgentKind; const DpumpRoot, FileName,
+  JobWorkDir: string; out ErrorText: string): Boolean;
+const
+  CHUNK_SIZE = 8 * 1024 * 1024;
+var
+  BeginReq: TJSONObject;
+  BeginRes: TJSONObject;
+  ChunkReq: TJSONObject;
+  ChunkRes: TJSONObject;
+  EndReq: TJSONObject;
+  EndRes: TJSONObject;
+  LocalFilePath: string;
+  LocalStream: TFileStream;
+  Offset: Int64;
+  FileSize: Int64;
+  Sha256: string;
+  DataText: string;
+  ChunkBytes: TBytes;
+  BytesRead: Integer;
+  EofFlag: Boolean;
+  ReadOpen: Boolean;
+  EndError: string;
+begin
+  ErrorText := '';
+  Offset := 0;
+  ReadOpen := False;
+  try
+    BeginReq := TJSONObject.Create;
+    try
+      BeginReq.AddPair('type', MSG_FILE_BEGIN);
+      BeginReq.AddPair('mode', 'read');
+      BeginReq.AddPair('dpumpRoot', DpumpRoot);
+      BeginReq.AddPair('fileName', FileName);
+      if not SendAgentRequest(Kind, BeginReq, MSG_FILE_ACK, 60000, BeginRes, ErrorText) then
+        Exit(False);
+    finally
+      BeginReq.Free;
+    end;
+
+    try
+      if not JsonGetBoolean(BeginRes, 'ok', False) then
+      begin
+        ErrorText := Format('%s open read failed: %s',
+          [AgentKindToString(Kind), JsonGetString(BeginRes, 'error', '')]);
+        Exit(False);
+      end;
+      FileSize := StrToInt64Def(JsonGetString(BeginRes, 'size', '0'), 0);
+      Sha256 := JsonGetString(BeginRes, 'sha256', '');
+      ReadOpen := True;
+    finally
+      BeginRes.Free;
+    end;
+
+    LocalFilePath := TPath.Combine(JobWorkDir, ExtractFileName(FileName));
+    TDirectory.CreateDirectory(ExtractFilePath(LocalFilePath));
+    LocalStream := TFileStream.Create(LocalFilePath, fmCreate);
+    try
+      while Offset < FileSize do
+      begin
+        ChunkReq := TJSONObject.Create;
+        try
+          ChunkReq.AddPair('type', MSG_FILE_CHUNK);
+          ChunkReq.AddPair('mode', 'read');
+          ChunkReq.AddPair('dpumpRoot', DpumpRoot);
+          ChunkReq.AddPair('fileName', FileName);
+          ChunkReq.AddPair('offset', TJSONNumber.Create(Offset));
+          ChunkReq.AddPair('chunkSize', TJSONNumber.Create(CHUNK_SIZE));
+          if not SendAgentRequest(Kind, ChunkReq, MSG_FILE_CHUNK, 120000, ChunkRes, ErrorText) then
+            Exit(False);
+        finally
+          ChunkReq.Free;
+        end;
+
+        try
+          if not JsonGetBoolean(ChunkRes, 'ok', False) then
+          begin
+            ErrorText := Format('%s read chunk failed: %s',
+              [AgentKindToString(Kind), JsonGetString(ChunkRes, 'error', '')]);
+            Exit(False);
+          end;
+          DataText := JsonGetString(ChunkRes, 'data', '');
+          EofFlag := JsonGetBoolean(ChunkRes, 'eof', False);
+          BytesRead := JsonGetInteger(ChunkRes, 'bytesRead', 0);
+        finally
+          ChunkRes.Free;
+        end;
+
+        if DataText <> '' then
+        begin
+          ChunkBytes := TNetEncoding.Base64.DecodeStringToBytes(DataText);
+          if Length(ChunkBytes) > 0 then
+            LocalStream.WriteBuffer(ChunkBytes[0], Length(ChunkBytes));
+        end;
+
+        if BytesRead <= 0 then
+        begin
+          if EofFlag then
+            Break;
+          ErrorText := 'Unexpected zero-size chunk while reading from ' + AgentKindToString(Kind);
+          Exit(False);
+        end;
+
+        Offset := Offset + BytesRead;
+      end;
+    finally
+      LocalStream.Free;
+    end;
+
+    if (Sha256 <> '') and (not SameText(THashSHA2.GetHashStringFromFile(LocalFilePath), Sha256)) then
+    begin
+      ErrorText := 'Checksum mismatch while copying file from ' + AgentKindToString(Kind);
+      Exit(False);
+    end;
+
+    Result := True;
+  finally
+    if ReadOpen then
+    begin
+      EndReq := TJSONObject.Create;
+      try
+        EndReq.AddPair('type', MSG_FILE_END);
+        EndReq.AddPair('mode', 'read');
+        EndReq.AddPair('dpumpRoot', DpumpRoot);
+        EndReq.AddPair('fileName', FileName);
+        if SendAgentRequest(Kind, EndReq, MSG_FILE_ACK, 30000, EndRes, EndError) then
+        begin
+          if Assigned(EndRes) then
+            EndRes.Free;
+        end;
+      finally
+        EndReq.Free;
+      end;
+    end;
+  end;
+end;
+
+function TMainForm.GetAgentFileDigest(const Kind: TAgentKind; const DpumpRoot, FileName: string;
+  out FileSize: Int64; out Sha256, ErrorText: string): Boolean;
+var
+  BeginReq: TJSONObject;
+  BeginRes: TJSONObject;
+  EndReq: TJSONObject;
+  EndRes: TJSONObject;
+  EndError: string;
+  ReadOpen: Boolean;
+begin
+  FileSize := 0;
+  Sha256 := '';
+  ErrorText := '';
+  ReadOpen := False;
+
+  BeginReq := TJSONObject.Create;
+  try
+    BeginReq.AddPair('type', MSG_FILE_BEGIN);
+    BeginReq.AddPair('mode', 'read');
+    BeginReq.AddPair('dpumpRoot', DpumpRoot);
+    BeginReq.AddPair('fileName', FileName);
+    if not SendAgentRequest(Kind, BeginReq, MSG_FILE_ACK, 60000, BeginRes, ErrorText) then
+      Exit(False);
+  finally
+    BeginReq.Free;
+  end;
+
+  try
+    if not JsonGetBoolean(BeginRes, 'ok', False) then
+    begin
+      ErrorText := Format('%s digest open failed: %s',
+        [AgentKindToString(Kind), JsonGetString(BeginRes, 'error', '')]);
+      Exit(False);
+    end;
+    FileSize := StrToInt64Def(JsonGetString(BeginRes, 'size', '0'), 0);
+    Sha256 := JsonGetString(BeginRes, 'sha256', '');
+    ReadOpen := True;
+    Result := True;
+  finally
+    BeginRes.Free;
+    if ReadOpen then
+    begin
+      EndReq := TJSONObject.Create;
+      try
+        EndReq.AddPair('type', MSG_FILE_END);
+        EndReq.AddPair('mode', 'read');
+        EndReq.AddPair('dpumpRoot', DpumpRoot);
+        EndReq.AddPair('fileName', FileName);
+        if SendAgentRequest(Kind, EndReq, MSG_FILE_ACK, 30000, EndRes, EndError) then
+        begin
+          if Assigned(EndRes) then
+            EndRes.Free;
+        end;
+      finally
+        EndReq.Free;
+      end;
+    end;
+  end;
+end;
+
+function TMainForm.TransferSingleFile(const Request: TMigrationRequest; const FileName, JobWorkDir: string;
+  out ErrorText: string): Boolean;
+const
+  CHUNK_SIZE = 8 * 1024 * 1024;
+var
+  SourceBeginReq: TJSONObject;
+  SourceBeginRes: TJSONObject;
+  SourceEndReq: TJSONObject;
+  SourceEndRes: TJSONObject;
+  TargetBeginReq: TJSONObject;
+  TargetBeginRes: TJSONObject;
+  ChunkReq: TJSONObject;
+  ChunkRes: TJSONObject;
+  TargetChunkReq: TJSONObject;
+  TargetChunkRes: TJSONObject;
+  TargetEndReq: TJSONObject;
+  TargetEndRes: TJSONObject;
+  LocalFilePath: string;
+  LocalStream: TFileStream;
+  Offset: Int64;
+  FileSize: Int64;
+  Sha256: string;
+  DataText: string;
+  ChunkBytes: TBytes;
+  BytesRead: Integer;
+  EofFlag: Boolean;
+  SourceOpen: Boolean;
+  TargetOpen: Boolean;
+  AbortReq: TJSONObject;
+  AbortRes: TJSONObject;
+  AbortError: string;
+  SourceEndError: string;
+  TargetDigestSize: Int64;
+  TargetDigestSha: string;
+  DigestError: string;
+begin
+  Result := False;
+  ErrorText := '';
+  Offset := 0;
+
+  SourceBeginReq := TJSONObject.Create;
+  try
+    SourceBeginReq.AddPair('type', MSG_FILE_BEGIN);
+    SourceBeginReq.AddPair('mode', 'read');
+    SourceBeginReq.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    SourceBeginReq.AddPair('fileName', FileName);
+    if not SendAgentRequest(akSource, SourceBeginReq, MSG_FILE_ACK, 60000, SourceBeginRes, ErrorText) then
+      Exit;
+  finally
+    SourceBeginReq.Free;
+  end;
+
+  try
+    if not JsonGetBoolean(SourceBeginRes, 'ok', False) then
+    begin
+      ErrorText := 'Source file open failed: ' + JsonGetString(SourceBeginRes, 'error', '');
+      Exit;
+    end;
+    FileSize := StrToInt64Def(JsonGetString(SourceBeginRes, 'size', '0'), 0);
+    Sha256 := JsonGetString(SourceBeginRes, 'sha256', '');
+    SourceOpen := True;
+  finally
+    SourceBeginRes.Free;
+  end;
+
+  TargetBeginReq := TJSONObject.Create;
+  try
+    TargetBeginReq.AddPair('type', MSG_FILE_BEGIN);
+    TargetBeginReq.AddPair('mode', 'write');
+    TargetBeginReq.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+    TargetBeginReq.AddPair('fileName', FileName);
+    TargetBeginReq.AddPair('overwrite', TJSONTrue.Create);
+    if not SendAgentRequest(akTarget, TargetBeginReq, MSG_FILE_ACK, 60000, TargetBeginRes, ErrorText) then
+      Exit;
+  finally
+    TargetBeginReq.Free;
+  end;
+
+  try
+    if not JsonGetBoolean(TargetBeginRes, 'ok', False) then
+    begin
+      ErrorText := 'Target file open failed: ' + JsonGetString(TargetBeginRes, 'error', '');
+      Exit;
+    end;
+    TargetOpen := True;
+  finally
+    TargetBeginRes.Free;
+  end;
+
+  try
+    LocalFilePath := TPath.Combine(JobWorkDir, ExtractFileName(FileName));
+    TDirectory.CreateDirectory(ExtractFilePath(LocalFilePath));
+    LocalStream := TFileStream.Create(LocalFilePath, fmCreate);
+    try
+      while Offset < FileSize do
+      begin
+        ChunkReq := TJSONObject.Create;
+        try
+          ChunkReq.AddPair('type', MSG_FILE_CHUNK);
+          ChunkReq.AddPair('mode', 'read');
+          ChunkReq.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+          ChunkReq.AddPair('fileName', FileName);
+          ChunkReq.AddPair('offset', TJSONNumber.Create(Offset));
+          ChunkReq.AddPair('chunkSize', TJSONNumber.Create(CHUNK_SIZE));
+          if not SendAgentRequest(akSource, ChunkReq, MSG_FILE_CHUNK, 120000, ChunkRes, ErrorText) then
+            Exit;
+        finally
+          ChunkReq.Free;
+        end;
+
+        try
+          if not JsonGetBoolean(ChunkRes, 'ok', False) then
+          begin
+            ErrorText := 'Source chunk read failed: ' + JsonGetString(ChunkRes, 'error', '');
+            Exit;
+          end;
+          DataText := JsonGetString(ChunkRes, 'data', '');
+          EofFlag := JsonGetBoolean(ChunkRes, 'eof', False);
+          BytesRead := JsonGetInteger(ChunkRes, 'bytesRead', 0);
+        finally
+          ChunkRes.Free;
+        end;
+
+        if DataText <> '' then
+        begin
+          ChunkBytes := TNetEncoding.Base64.DecodeStringToBytes(DataText);
+          if Length(ChunkBytes) > 0 then
+            LocalStream.WriteBuffer(ChunkBytes[0], Length(ChunkBytes));
+
+          TargetChunkReq := TJSONObject.Create;
+          try
+            TargetChunkReq.AddPair('type', MSG_FILE_CHUNK);
+            TargetChunkReq.AddPair('mode', 'write');
+            TargetChunkReq.AddPair('fileName', FileName);
+            TargetChunkReq.AddPair('data', DataText);
+            if not SendAgentRequest(akTarget, TargetChunkReq, MSG_FILE_ACK, 120000, TargetChunkRes, ErrorText) then
+              Exit;
+          finally
+            TargetChunkReq.Free;
+          end;
+
+          try
+            if not JsonGetBoolean(TargetChunkRes, 'ok', False) then
+            begin
+              ErrorText := 'Target chunk write failed: ' + JsonGetString(TargetChunkRes, 'error', '');
+              Exit;
+            end;
+          finally
+            TargetChunkRes.Free;
+          end;
+        end;
+
+        if BytesRead <= 0 then
+        begin
+          if EofFlag then
+            Break;
+          ErrorText := 'Unexpected zero-size chunk';
+          Exit;
+        end;
+
+        Offset := Offset + BytesRead;
+        if (Offset mod (8 * CHUNK_SIZE) = 0) or (Offset >= FileSize) then
+          FLogger.AddInfo(msTransport, Format('Transferred %s: %d / %d bytes', [FileName, Offset, FileSize]));
+      end;
+    finally
+      LocalStream.Free;
+    end;
+
+    TargetEndReq := TJSONObject.Create;
+    try
+      TargetEndReq.AddPair('type', MSG_FILE_END);
+      TargetEndReq.AddPair('mode', 'write');
+      TargetEndReq.AddPair('fileName', FileName);
+      TargetEndReq.AddPair('size', TJSONNumber.Create(FileSize));
+      TargetEndReq.AddPair('sha256', Sha256);
+      if not SendAgentRequest(akTarget, TargetEndReq, MSG_FILE_ACK, 60000, TargetEndRes, ErrorText) then
+        Exit;
+    finally
+      TargetEndReq.Free;
+    end;
+
+    try
+      if not JsonGetBoolean(TargetEndRes, 'ok', False) then
+      begin
+        ErrorText := 'Target file finalize failed: ' + JsonGetString(TargetEndRes, 'error', '');
+        Exit;
+      end;
+      TargetOpen := False;
+    finally
+      TargetEndRes.Free;
+    end;
+
+    if not GetAgentFileDigest(akTarget, Request.AgentDpumpRoot, FileName,
+      TargetDigestSize, TargetDigestSha, DigestError) then
+    begin
+      ErrorText := 'Target post-transfer digest failed: ' + DigestError;
+      Exit;
+    end;
+
+    if TargetDigestSize <> FileSize then
+    begin
+      ErrorText := Format('Size mismatch after transfer for %s (source=%d target=%d)',
+        [FileName, FileSize, TargetDigestSize]);
+      Exit;
+    end;
+
+    if not SameText(TargetDigestSha, Sha256) then
+    begin
+      ErrorText := Format('Checksum mismatch after transfer for %s (source=%s target=%s)',
+        [FileName, Sha256, TargetDigestSha]);
+      Exit;
+    end;
+
+    if (Sha256 <> '') and (not SameText(THashSHA2.GetHashStringFromFile(LocalFilePath), Sha256)) then
+    begin
+      ErrorText := 'Server checksum mismatch for ' + FileName;
+      Exit;
+    end;
+
+    Result := True;
+  finally
+    if TargetOpen then
+    begin
+      AbortReq := TJSONObject.Create;
+      try
+        AbortReq.AddPair('type', MSG_FILE_END);
+        AbortReq.AddPair('mode', 'abort');
+        AbortReq.AddPair('fileName', FileName);
+        if SendAgentRequest(akTarget, AbortReq, MSG_FILE_ACK, 30000, AbortRes, AbortError) then
+        begin
+          if Assigned(AbortRes) then
+            AbortRes.Free;
+        end;
+      finally
+        AbortReq.Free;
+      end;
+    end;
+
+    if SourceOpen then
+    begin
+      SourceEndReq := TJSONObject.Create;
+      try
+        SourceEndReq.AddPair('type', MSG_FILE_END);
+        SourceEndReq.AddPair('mode', 'read');
+        SourceEndReq.AddPair('dpumpRoot', Request.AgentDpumpRoot);
+        SourceEndReq.AddPair('fileName', FileName);
+        if SendAgentRequest(akSource, SourceEndReq, MSG_FILE_ACK, 30000, SourceEndRes, SourceEndError) then
+        begin
+          if Assigned(SourceEndRes) then
+            SourceEndRes.Free;
+        end;
+      finally
+        SourceEndReq.Free;
+      end;
+    end;
+  end;
+end;
+
+function TMainForm.ResolveOracleToolPath(const ToolFileName: string): string;
+var
+  BinValue: string;
+  OracleHome: string;
+  Candidate: string;
+begin
+  BinValue := NormalizePathToken(FSettings.OracleClientBin);
+  if BinValue <> '' then
+  begin
+    if SameText(TPath.GetExtension(BinValue), '.exe') then
+    begin
+      if SameText(ExtractFileName(BinValue), ToolFileName) then
+        Candidate := BinValue
+      else
+        Candidate := TPath.Combine(ExtractFileDir(BinValue), ToolFileName);
+    end
+    else
+      Candidate := TPath.Combine(BinValue, ToolFileName);
+    if FileExists(Candidate) then
+      Exit(Candidate);
+  end;
+
+  OracleHome := NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'));
+  if OracleHome <> '' then
+  begin
+    Candidate := TPath.Combine(OracleHome, 'bin\' + ToolFileName);
+    if FileExists(Candidate) then
+      Exit(Candidate);
+  end;
+
+  if TryResolveOracleToolFromRegistry(ToolFileName, Candidate) then
+    Exit(Candidate);
+
+  Result := ToolFileName;
+end;
+
+function TMainForm.RunOracleTool(const ToolFileName, Arguments, WorkDir: string;
+  const TimeoutMs: Cardinal; const ProgressMessageType, RequestId: string;
+  out OutputLines: TArray<string>; out ErrorText: string): Boolean;
+var
+  ProcessResult: TProcessRunResult;
+  ToolPath: string;
+begin
+  SetLength(OutputLines, 0);
+  ErrorText := '';
+  ToolPath := ResolveOracleToolPath(ToolFileName);
+
+  try
+    ProcessResult := TProcessRunner.Run(ToolPath, Arguments, WorkDir, TimeoutMs,
+      procedure(const Line: string)
+      var
+        ProgressObj: TJSONObject;
+      begin
+        if (ProgressMessageType = '') or (RequestId = '') then
+          Exit;
+        ProgressObj := TJSONObject.Create;
+        try
+          ProgressObj.AddPair('type', ProgressMessageType);
+          ProgressObj.AddPair('requestId', RequestId);
+          ProgressObj.AddPair('line', Line);
+          SendJsonToServer(ProgressObj);
+        finally
+          ProgressObj.Free;
+        end;
+      end);
+    OutputLines := ProcessResult.Output;
+    if ProcessResult.TimedOut then
+    begin
+      ErrorText := ToolFileName + ' timeout';
+      Exit(False);
+    end;
+    if ProcessResult.ExitCode <> 0 then
+    begin
+      ErrorText := Format('%s exit code %d', [ToolFileName, ProcessResult.ExitCode]);
+      Exit(False);
+    end;
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      Exit(False);
+    end;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.AgentRunPrecheck(const DpumpRoot, PDB, SysUser, SysPassword, SchemaName,
+  RequiredTablespace: string;
+  out SqlPlusPath, ExpdpPath, ImpdpPath, ErrorText: string): Boolean;
+var
+  CurrentDir: string;
+  TmpDir: string;
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  SchemaCheckValue: string;
+  TablespaceCheckValue: string;
+  Parts: TArray<string>;
+  SqlPlusRaw: string;
+  ExpdpRaw: string;
+  ImpdpRaw: string;
+  ResolvedExe: string;
+begin
+  ErrorText := '';
+  SqlPlusPath := ResolveSqlPlusPath;
+  ExpdpPath := ResolveOracleToolPath('expdp.exe');
+  ImpdpPath := ResolveOracleToolPath('impdp.exe');
+  SqlPlusRaw := SqlPlusPath;
+  ExpdpRaw := ExpdpPath;
+  ImpdpRaw := ImpdpPath;
+
+  ResolvedExe := '';
+  if not TryResolveExecutable(SqlPlusPath, ResolvedExe) then
+  begin
+    ErrorText := Format(
+      'sqlplus executable not found (value="%s", oracle_client_bin="%s", ORACLE_HOME="%s")',
+      [SqlPlusRaw, NormalizePathToken(FSettings.OracleClientBin),
+       NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'))]);
+    Exit(False);
+  end;
+  SqlPlusPath := ResolvedExe;
+
+  ResolvedExe := '';
+  if not TryResolveExecutable(ExpdpPath, ResolvedExe) then
+  begin
+    ErrorText := Format(
+      'expdp executable not found (value="%s", oracle_client_bin="%s", ORACLE_HOME="%s")',
+      [ExpdpRaw, NormalizePathToken(FSettings.OracleClientBin),
+       NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'))]);
+    Exit(False);
+  end;
+  ExpdpPath := ResolvedExe;
+
+  ResolvedExe := '';
+  if not TryResolveExecutable(ImpdpPath, ResolvedExe) then
+  begin
+    ErrorText := Format(
+      'impdp executable not found (value="%s", oracle_client_bin="%s", ORACLE_HOME="%s")',
+      [ImpdpRaw, NormalizePathToken(FSettings.OracleClientBin),
+       NormalizePathToken(GetEnvironmentVariable('ORACLE_HOME'))]);
+    Exit(False);
+  end;
+  ImpdpPath := ResolvedExe;
+
+  if not EnsureAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText) then
+    Exit(False);
+
+  SchemaCheckValue := UpperCase(Trim(SchemaName));
+  TablespaceCheckValue := UpperCase(Trim(RequiredTablespace));
+
+  if (Trim(PDB) <> '') and (Trim(SysUser) <> '') then
+  begin
+    ScriptText :=
+      'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+      'whenever sqlerror exit 1' + sLineBreak +
+      BuildSqlConnectClause('127.0.0.1', 1521, PDB, SysUser, SysPassword) + sLineBreak +
+      'select ''PRECHECK_OK'' from dual;' + sLineBreak +
+      'select ''SCHEMA_COUNT|'' || count(*) from dba_users where username = upper(''' +
+        EscapeSqlLiteral(SchemaCheckValue) + ''');' + sLineBreak +
+      'select ''TS_COUNT|'' || count(*) from dba_tablespaces where tablespace_name = upper(''' +
+        EscapeSqlLiteral(TablespaceCheckValue) + ''');' + sLineBreak +
+      'exit' + sLineBreak;
+    if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+      Exit(False);
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if StartsText('SCHEMA_COUNT|', Trimmed) then
+      begin
+        Parts := SplitAndTrim(Trimmed, '|');
+        if (Length(Parts) >= 2) and (StrToIntDef(Trim(Parts[1]), 0) = 0) then
+        begin
+          ErrorText := 'Schema not found: ' + SchemaCheckValue;
+          Exit(False);
+        end;
+      end;
+      if (TablespaceCheckValue <> '') and StartsText('TS_COUNT|', Trimmed) then
+      begin
+        Parts := SplitAndTrim(Trimmed, '|');
+        if (Length(Parts) >= 2) and (StrToIntDef(Trim(Parts[1]), 0) = 0) then
+        begin
+          ErrorText := 'Tablespace not found: ' + TablespaceCheckValue;
+          Exit(False);
+        end;
+      end;
+    end;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.ClearDirectoryContents(const DirectoryPath: string; out ErrorText: string): Boolean;
+begin
+  ErrorText := '';
+  try
+    if TDirectory.Exists(DirectoryPath) then
+      TDirectory.Delete(DirectoryPath, True);
+    TDirectory.CreateDirectory(DirectoryPath);
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      Exit(False);
+    end;
+  end;
+  Result := True;
+end;
+
+function TMainForm.EnsureAgentFolders(const DpumpRoot: string; out CurrentDir, TmpDir: string;
+  out ErrorText: string): Boolean;
+begin
+  ErrorText := '';
+  if Trim(DpumpRoot) = '' then
+  begin
+    ErrorText := 'dpumpRoot is empty';
+    Exit(False);
+  end;
+  CurrentDir := TPath.Combine(DpumpRoot, 'current');
+  TmpDir := TPath.Combine(DpumpRoot, 'tmp');
+  try
+    TDirectory.CreateDirectory(CurrentDir);
+    TDirectory.CreateDirectory(TmpDir);
+  except
+    on E: Exception do
+    begin
+      ErrorText := E.Message;
+      Exit(False);
+    end;
+  end;
+  Result := True;
+end;
+
+function TMainForm.PrepareAgentFolders(const DpumpRoot: string; out CurrentDir, TmpDir: string;
+  out ErrorText: string): Boolean;
+begin
+  ErrorText := '';
+  if Trim(DpumpRoot) = '' then
+  begin
+    ErrorText := 'dpumpRoot is empty';
+    Exit(False);
+  end;
+  if not EnsureAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText) then
+    Exit(False);
+
+  if not ClearDirectoryContents(CurrentDir, ErrorText) then
+    Exit(False);
+  if not ClearDirectoryContents(TmpDir, ErrorText) then
+    Exit(False);
+
+  Result := True;
+end;
+
+procedure TMainForm.AgentCloseIncomingFile;
+begin
+  if Assigned(FAgentIncomingFileStream) then
+    FreeAndNil(FAgentIncomingFileStream);
+  FAgentIncomingFilePath := '';
+end;
+
+procedure TMainForm.AgentCloseOutgoingFile;
+begin
+  if Assigned(FAgentOutgoingFileStream) then
+    FreeAndNil(FAgentOutgoingFileStream);
+  FAgentOutgoingFilePath := '';
+  FAgentOutgoingFileSize := 0;
+  FAgentOutgoingFileSha256 := '';
+end;
+
+function TMainForm.AgentRunPrepareDirectory(const DpumpRoot, PDB, SysUser, SysPassword,
+  SchemaName: string; out ErrorText: string): Boolean;
+var
+  CurrentDir: string;
+  TmpDir: string;
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  SchemaValue: string;
+begin
+  ErrorText := '';
+  if not EnsureAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText) then
+    Exit(False);
+
+  SchemaValue := UpperCase(Trim(SchemaName));
+  if SchemaValue = '' then
+  begin
+    ErrorText := 'Schema is empty';
+    Exit(False);
+  end;
+  ScriptText :=
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause('127.0.0.1', 1521, PDB, SysUser, SysPassword) + sLineBreak +
+    'create or replace directory DP_DIR as ''' + EscapeSqlLiteral(CurrentDir) + ''';' + sLineBreak +
+    'begin' + sLineBreak +
+    '  execute immediate ''grant read, write on directory DP_DIR to ' + SchemaValue + ''';' + sLineBreak +
+    'exception' + sLineBreak +
+    '  when others then' + sLineBreak +
+    '    if sqlcode <> -1917 then raise; end if;' + sLineBreak +
+    'end;' + sLineBreak +
+    '/' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  for LineText in OutputLines do
+  begin
+    if StartsText('ORA-', Trim(LineText)) or StartsText('SP2-', Trim(LineText)) then
+    begin
+      ErrorText := Trim(LineText);
+      Exit(False);
+    end;
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.AgentRunExport(const DpumpRoot, PDB, SchemaName, SchemaPassword,
+  SysUser, SysPassword, JobId, RequestId: string; out ExportFiles: TArray<string>;
+  out ErrorText: string): Boolean;
+var
+  CurrentDir: string;
+  TmpDir: string;
+  ParFile: string;
+  Par: TStringList;
+  OutputLines: TArray<string>;
+  DumpPattern: string;
+  DumpFiles: TArray<string>;
+  ExportLog: string;
+  Utf8NoBom: TUTF8Encoding;
+  I: Integer;
+begin
+  ErrorText := '';
+  SetLength(ExportFiles, 0);
+
+  if Trim(SchemaName) = '' then
+  begin
+    ErrorText := 'Schema is empty';
+    Exit(False);
+  end;
+  if Trim(SchemaPassword) = '' then
+  begin
+    ErrorText := 'Schema password is empty';
+    Exit(False);
+  end;
+
+  if not EnsureAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText) then
+    Exit(False);
+
+  ParFile := TPath.Combine(TmpDir, 'exp_' + JobId + '.par');
+  Par := TStringList.Create;
+  try
+    Par.Add('userid="' + Trim(SchemaName) + '/' + StringReplace(SchemaPassword, '"', '""', [rfReplaceAll]) +
+      '@//127.0.0.1:1521/' + Trim(PDB) + '"');
+    Par.Add('schemas=' + Trim(SchemaName));
+    Par.Add('directory=DP_DIR');
+    Par.Add('dumpfile=' + LowerCase(Trim(SchemaName)) + '_%U.dmp');
+    Par.Add('logfile=exp_' + LowerCase(Trim(SchemaName)) + '.log');
+    Par.Add('parallel=4');
+    Par.Add('compression=all');
+    Par.Add('exclude=statistics');
+    Utf8NoBom := TUTF8Encoding.Create(False);
+    try
+      Par.SaveToFile(ParFile, Utf8NoBom);
+    finally
+      Utf8NoBom.Free;
+    end;
+  finally
+    Par.Free;
+  end;
+
+  if not RunOracleTool('expdp.exe', 'parfile="' + ParFile + '"', CurrentDir, 12 * 60 * 60 * 1000,
+    MSG_RUN_EXPORT_PROGRESS, RequestId, OutputLines, ErrorText) then
+    Exit(False);
+
+  DumpPattern := LowerCase(Trim(SchemaName)) + '_*.dmp';
+  DumpFiles := TDirectory.GetFiles(CurrentDir, DumpPattern, TSearchOption.soTopDirectoryOnly);
+  if Length(DumpFiles) = 0 then
+  begin
+    ErrorText := 'No dump files were produced by expdp';
+    Exit(False);
+  end;
+
+  if TFile.Exists(TPath.Combine(CurrentDir, 'exp_' + LowerCase(Trim(SchemaName)) + '.log')) then
+    SetLength(ExportFiles, Length(DumpFiles) + 1)
+  else
+    SetLength(ExportFiles, Length(DumpFiles));
+  for I := 0 to High(DumpFiles) do
+    ExportFiles[I] := ExtractFileName(DumpFiles[I]);
+  ExportLog := TPath.Combine(CurrentDir, 'exp_' + LowerCase(Trim(SchemaName)) + '.log');
+  if TFile.Exists(ExportLog) then
+    ExportFiles[High(ExportFiles)] := ExtractFileName(ExportLog);
+
+  Result := True;
+end;
+
+function TMainForm.AgentRunClean(const PDB, SysUser, SysPassword, SchemaName, SchemaPassword,
+  TargetTablespace: string; out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  SchemaUpper: string;
+  TablespaceUpper: string;
+  EscPassword: string;
+begin
+  ErrorText := '';
+  SchemaUpper := UpperCase(Trim(SchemaName));
+  TablespaceUpper := UpperCase(Trim(TargetTablespace));
+  if (SchemaUpper = '') or (TablespaceUpper = '') then
+  begin
+    ErrorText := 'Schema or target tablespace is empty';
+    Exit(False);
+  end;
+  EscPassword := StringReplace(SchemaPassword, '"', '""', [rfReplaceAll]);
+
+  ScriptText :=
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause('127.0.0.1', 1521, PDB, SysUser, SysPassword) + sLineBreak +
+    'declare c number;' + sLineBreak +
+    'begin' + sLineBreak +
+    '  select count(*) into c from dba_users where username = upper(''' + EscapeSqlLiteral(SchemaUpper) + ''');' + sLineBreak +
+    '  if c > 0 then execute immediate ''drop user ' + SchemaUpper + ' cascade''; end if;' + sLineBreak +
+    'end;' + sLineBreak +
+    '/' + sLineBreak +
+    'create user ' + SchemaUpper + ' identified by "' + EscPassword + '"' + sLineBreak +
+    '  default tablespace ' + TablespaceUpper + ' temporary tablespace TEMP;' + sLineBreak +
+    'grant create session to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create table to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create view to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create sequence to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create procedure to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create trigger to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create type to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create synonym to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create materialized view to ' + SchemaUpper + ';' + sLineBreak +
+    'grant create job to ' + SchemaUpper + ';' + sLineBreak +
+    'grant read, write on directory DP_DIR to ' + SchemaUpper + ';' + sLineBreak +
+    'alter user ' + SchemaUpper + ' quota unlimited on ' + TablespaceUpper + ';' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  Result := True;
+end;
+
+function TMainForm.AgentRunImport(const DpumpRoot, PDB, SourceSchemaName, SchemaName, SchemaPassword,
+  TargetTablespace, SourceTablespacesRaw, JobId, RequestId: string;
+  out ImportLogFile: string; out ErrorText: string): Boolean;
+var
+  CurrentDir: string;
+  TmpDir: string;
+  ParFile: string;
+  Par: TStringList;
+  OutputLines: TArray<string>;
+  SourceTsParts: TArray<string>;
+  TsPart: string;
+  TargetTsUpper: string;
+  SourceSchemaUpper: string;
+  TargetSchemaUpper: string;
+  HasRemapTablespace: Boolean;
+  I: Integer;
+  LineText: string;
+  UpperLine: string;
+  OraFound: Boolean;
+  FatalOraFound: Boolean;
+  Utf8NoBom: TUTF8Encoding;
+begin
+  ErrorText := '';
+  ImportLogFile := '';
+
+  if (Trim(SourceSchemaName) = '') or (Trim(SchemaName) = '') then
+  begin
+    ErrorText := 'Source/Target schema is empty';
+    Exit(False);
+  end;
+  if Trim(SchemaPassword) = '' then
+  begin
+    ErrorText := 'Target schema password is empty';
+    Exit(False);
+  end;
+  if Trim(TargetTablespace) = '' then
+  begin
+    ErrorText := 'Target tablespace is empty';
+    Exit(False);
+  end;
+
+  if not EnsureAgentFolders(DpumpRoot, CurrentDir, TmpDir, ErrorText) then
+    Exit(False);
+
+  ParFile := TPath.Combine(TmpDir, 'imp_' + JobId + '.par');
+  ImportLogFile := 'imp_' + LowerCase(Trim(SchemaName)) + '.log';
+  TargetTsUpper := UpperCase(Trim(TargetTablespace));
+  SourceSchemaUpper := UpperCase(Trim(SourceSchemaName));
+  TargetSchemaUpper := UpperCase(Trim(SchemaName));
+  Par := TStringList.Create;
+  try
+    Par.Add('userid="' + Trim(SchemaName) + '/' + StringReplace(SchemaPassword, '"', '""', [rfReplaceAll]) +
+      '@//127.0.0.1:1521/' + Trim(PDB) + '"');
+    Par.Add('schemas=' + Trim(SourceSchemaName));
+    if (SourceSchemaUpper <> '') and (TargetSchemaUpper <> '') and
+       (not SameText(SourceSchemaUpper, TargetSchemaUpper)) then
+      Par.Add('remap_schema=' + SourceSchemaUpper + ':' + TargetSchemaUpper);
+    Par.Add('directory=DP_DIR');
+    Par.Add('dumpfile=' + LowerCase(Trim(SourceSchemaName)) + '_%U.dmp');
+    Par.Add('logfile=' + ImportLogFile);
+    Par.Add('parallel=4');
+    Par.Add('transform=segment_attributes:n');
+    SourceTsParts := SplitAndTrim(SourceTablespacesRaw, ',');
+    HasRemapTablespace := False;
+    for I := 0 to High(SourceTsParts) do
+    begin
+      TsPart := SourceTsParts[I];
+      TsPart := UpperCase(Trim(TsPart));
+      if TsPart = '' then
+        Continue;
+      Par.Add('remap_tablespace=' + TsPart + ':' + TargetTsUpper);
+      HasRemapTablespace := True;
+    end;
+    if not HasRemapTablespace then
+      Par.Add('remap_tablespace=' + TargetTsUpper + ':' + TargetTsUpper);
+    Utf8NoBom := TUTF8Encoding.Create(False);
+    try
+      Par.SaveToFile(ParFile, Utf8NoBom);
+    finally
+      Utf8NoBom.Free;
+    end;
+  finally
+    Par.Free;
+  end;
+
+  if not RunOracleTool('impdp.exe', 'parfile="' + ParFile + '"', CurrentDir, 12 * 60 * 60 * 1000,
+    MSG_RUN_IMPORT_PROGRESS, RequestId, OutputLines, ErrorText) then
+  begin
+    OraFound := False;
+    FatalOraFound := False;
+    for LineText in OutputLines do
+    begin
+      UpperLine := UpperCase(Trim(LineText));
+      if Pos('ORA-', UpperLine) = 0 then
+        Continue;
+      OraFound := True;
+      if IsBenignImportWarning(UpperLine) then
+        Continue;
+      if Pos('ORA-39083', UpperLine) > 0 then
+        Continue;
+      FatalOraFound := True;
+      Break;
+    end;
+    if OraFound and (not FatalOraFound) then
+    begin
+      ErrorText := '';
+      if Assigned(FLogger) then
+        FLogger.AddWarning(msImport,
+          'impdp finished with non-fatal Oracle warnings (grants/object-exists).');
+      Exit(True);
+    end;
+    Exit(False);
+  end;
+
+  Result := True;
+end;
+
+function TMainForm.AgentRunPostCheck(const PDB, SysUser, SysPassword,
+  SchemaName: string; out InvalidSummary: string; out ErrorText: string): Boolean;
+var
+  ScriptText: string;
+  OutputLines: TArray<string>;
+  LineText: string;
+  Trimmed: string;
+  SummaryList: TStringList;
+begin
+  ErrorText := '';
+  InvalidSummary := '';
+
+  ScriptText :=
+    'set pagesize 0 feedback off verify off heading off echo off trimspool on linesize 32767' + sLineBreak +
+    'whenever sqlerror exit 1' + sLineBreak +
+    BuildSqlConnectClause('127.0.0.1', 1521, PDB, SysUser, SysPassword) + sLineBreak +
+    'begin dbms_utility.compile_schema(schema => upper(''' + EscapeSqlLiteral(SchemaName) + ''')); end;' + sLineBreak +
+    '/' + sLineBreak +
+    'select object_type || ''|'' || cnt' + sLineBreak +
+    '  from (' + sLineBreak +
+    '        select object_type, count(*) cnt' + sLineBreak +
+    '          from dba_objects' + sLineBreak +
+    '         where owner = upper(''' + EscapeSqlLiteral(SchemaName) + ''')' + sLineBreak +
+    '           and status = ''INVALID''' + sLineBreak +
+    '         group by object_type' + sLineBreak +
+    '       )' + sLineBreak +
+    ' order by cnt desc;' + sLineBreak +
+    'exit' + sLineBreak;
+
+  if not RunSqlPlusScript(ScriptText, OutputLines, ErrorText) then
+    Exit(False);
+
+  SummaryList := TStringList.Create;
+  try
+    for LineText in OutputLines do
+    begin
+      Trimmed := Trim(LineText);
+      if Trimmed = '' then
+        Continue;
+      if StartsText('ORA-', Trimmed) or StartsText('SP2-', Trimmed) then
+      begin
+        ErrorText := Trimmed;
+        Exit(False);
+      end;
+      if Pos('|', Trimmed) > 0 then
+        SummaryList.Add(Trimmed);
+    end;
+    InvalidSummary := SummaryList.CommaText;
+  finally
+    SummaryList.Free;
+  end;
+
+  Result := True;
+end;
+
+procedure TMainForm.chkServerActiveClick(Sender: TObject);
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmServer then
+  begin
+    chkServerActive.Checked := False;
+    MessageDlg('Switch to Server tab before enabling listener.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if chkServerActive.Checked then
+  begin
+    try
+      StartServer;
+    except
+      on E: Exception do
+      begin
+        chkServerActive.Checked := False;
+        MessageDlg(E.Message, mtError, [mbOK], 0);
+      end;
+    end;
+  end
+  else
+  begin
+    if IsDistributedMigrationRunning then
+    begin
+      chkServerActive.Checked := True;
+      MessageDlg('Cannot stop server while migration is running.', mtWarning, [mbOK], 0);
+      Exit;
+    end;
+    StopServer;
+    FLogger.AddInfo(msIdle, 'Server listener stopped');
+  end;
+end;
+
+procedure TMainForm.btnShowLogClick(Sender: TObject);
+begin
+  EnsureLogForm;
+  FLogForm.Show;
+  FLogForm.BringToFront;
+end;
+
+procedure TMainForm.btnMigrateClick(Sender: TObject);
+var
+  Request: TMigrationRequest;
+  ErrorText: string;
+begin
+  LockModeIfNeeded;
+  if FSelectedMode <> mmServer then
+  begin
+    MessageDlg('Migration can be started only in Server mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  EnsureLogForm;
+  FLogger.Clear;
+  FLogForm.ClearLog;
+  btnShowLog.Visible := True;
+  FLogForm.Show;
+
+  btnMigrate.Enabled := False;
+  pbMigration.Position := 0;
+  lblProgressHint.Caption := 'Starting migration ...';
+
+  if not BuildMigrationRequest(Request, ErrorText) then
+  begin
+    FLogger.AddError(msPrecheck, ErrorText);
+    UpdateMigrateButtonState;
+    Exit;
+  end;
+
+  try
+    StartDistributedMigration(Request);
+  except
+    on E: Exception do
+    begin
+      FLogger.AddError(msFailed, E.Message);
+      UpdateMigrateButtonState;
+    end;
+  end;
+end;
+
+procedure TMainForm.cbSourceSchemaChange(Sender: TObject);
+var
+  SchemaName: string;
+begin
+  edtSourceTablespace.Items.Clear;
+  edtSourceTablespace.Text := '';
+  edtSourceTablespace.Enabled := False;
+  FSourceTablespacesRaw := '';
+  SchemaName := Trim(cbSourceSchema.Text);
+  if SchemaName = '' then
+    Exit;
+  if FServerSourceStatus <> csConnected then
+    Exit;
+  RequestTablespaceList(True, SchemaName);
+end;
+
+procedure TMainForm.cbTargetSchemaChange(Sender: TObject);
+var
+  SchemaName: string;
+begin
+  edtTargetTablespace.Items.Clear;
+  edtTargetTablespace.Text := '';
+  edtTargetTablespace.Enabled := False;
+  FTargetTablespacesRaw := '';
+  SchemaName := Trim(cbTargetSchema.Text);
+  if SchemaName = '' then
+    Exit;
+  if FServerTargetStatus <> csConnected then
+    Exit;
+  RequestTablespaceList(False, SchemaName);
+end;
+
+procedure TMainForm.btnSourceConnectClick(Sender: TObject);
+begin
+  SaveSettingsFromUI;
+  LockModeIfNeeded;
+  if FSelectedMode <> mmSource then
+  begin
+    MessageDlg('Source agent can connect only in Source mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if FSourceAgentStatus = csConnected then
+  begin
+    if Assigned(FLogger) then
+      FLogger.AddInfo(msIdle, 'Disconnecting Source agent from server');
+    DisconnectAgentConnection(True);
+    Exit;
+  end;
+
+  ConnectAgent(akSource, edtSourceServerIP.Text, edtSourceAgentPort.Text,
+    edtSourceAgentPassword.Text, lblSourceAgentStatusValue, FSourceAgentStatus);
+end;
+
+procedure TMainForm.btnTargetConnectClick(Sender: TObject);
+begin
+  SaveSettingsFromUI;
+  LockModeIfNeeded;
+  if FSelectedMode <> mmTarget then
+  begin
+    MessageDlg('Target agent can connect only in Target mode.', mtWarning, [mbOK], 0);
+    Exit;
+  end;
+
+  if FTargetAgentStatus = csConnected then
+  begin
+    if Assigned(FLogger) then
+      FLogger.AddInfo(msIdle, 'Disconnecting Target agent from server');
+    DisconnectAgentConnection(True);
+    Exit;
+  end;
+
+  ConnectAgent(akTarget, edtTargetServerIP.Text, edtTargetAgentPort.Text,
+    edtTargetAgentPassword.Text, lblTargetAgentStatusValue, FTargetAgentStatus);
+end;
+
+procedure TMainForm.pcModeChange(Sender: TObject);
+begin
+  if FInitializing then
+    Exit;
+  if not FModeLocked then
+    LockModeIfNeeded
+  else
+    UpdateModeStatusBar;
+end;
+
+procedure TMainForm.sbMainMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,
+  Y: Integer);
+var
+  FooterStartX: Integer;
+begin
+  if Button <> mbLeft then
+    Exit;
+  if sbMain.Panels.Count < 2 then
+    Exit;
+
+  FooterStartX := sbMain.ClientWidth - sbMain.Panels[1].Width;
+  if X < FooterStartX then
+    Exit;
+
+  ShellExecute(Handle, 'open', PChar(FOOTER_URL), nil, nil, SW_SHOWNORMAL);
+end;
+
+procedure TMainForm.LogFormClose(Sender: TObject; var Action: TCloseAction);
+begin
+  Action := caHide;
+end;
+
+end.
